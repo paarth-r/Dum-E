@@ -25,17 +25,17 @@ import numpy as np
 from dume import geometry as g
 
 # ---------------------------------------------------------------------------
-# Mount extrinsic (gripper frame -> camera optical frame).
+# Mount extrinsic (gripper_frame_link -> camera optical frame).
 #
-# Best-guess placeholder until hand-eye calibration on hardware. The Arducam sits just ahead
-# of the gripper looking down the gripper's approach axis. The rotation maps the gripper frame
-# to the OpenCV optical frame; the translation is a small forward/Down offset (metres).
-# Calibrate later; the value lives here so only this constant changes.
+# Physical mount (per Paarth): the Arducam sits directly under the hole in the claw, looking
+# orthogonal to the wrist axis, along the gripper's reach. Empirically (FK at HOME) the gripper
+# approach direction is gripper_frame_link's +Z and the wrist axis is its +Y — so the optical
+# +Z (OpenCV: +z forward) aligns with gripper +Z and the rotation is IDENTITY (optical axes ==
+# gripper_frame axes). Any final image-roll + the exact under-claw translation need hardware
+# calibration; the translation below is a placeholder (a few cm under/behind the claw hole).
+# Single source of truth could instead be a fixed `camera_optical_link` in the URDF (see notes).
 # ---------------------------------------------------------------------------
-_MOUNT_ROT = g.transform_from_pos_rpy(
-    [0.0, 0.0, 0.0], [-np.pi / 2, 0.0, -np.pi / 2]
-)[:3, :3]
-T_CAM_MOUNT: np.ndarray = g.make_transform([0.05, 0.0, 0.02], _MOUNT_ROT)
+T_CAM_MOUNT: np.ndarray = g.make_transform([0.0, -0.03, -0.02], np.eye(3))
 
 
 @dataclass(frozen=True)
