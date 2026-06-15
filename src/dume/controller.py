@@ -76,6 +76,11 @@ class Controller:
         self.wrist_roll_cmd = 0.0  # user-owned roll joint (deg)
         self.target_pose: np.ndarray | None = None
         self.gripper_cmd = 0.0
+        # Internal *commanded* joint reference. Control integrates and slews from this, NOT from
+        # the measured joints, so noisy servo feedback never leaks into the command stream (the
+        # root cause of teleop jitter). Re-synced to measured only on start / mode-switch / re-zero.
+        self.q_ref: np.ndarray | None = None
+        self._prev_vel = np.zeros(6)  # last commanded per-tick joint velocity (deg/tick), for jerk limit
 
     # ---- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -86,12 +91,15 @@ class Controller:
 
     def _sync_to_joints(self, q: np.ndarray) -> None:
         """Re-seat all targets from a measured joint vector (start / mode switch / re-zero)."""
+        q = np.asarray(q, dtype=float)
         self._pivot_target = self.kin_pos.fk(q[:3])[:3, 3].copy()
         self.wrist_flex_cmd = float(q[3])
         self.wrist_roll_cmd = float(q[4])
         self.gripper_cmd = float(q[5])
         self._filt_lin = np.zeros(3)
         self.target_pose = self.kin.fk(q)
+        self.q_ref = q.copy()  # commanded reference starts at the measured config
+        self._prev_vel = np.zeros(6)
 
     def stop(self) -> None:
         self.arm.disconnect()
@@ -100,7 +108,7 @@ class Controller:
     def step(self, cmd: Command, dt: float | None = None) -> Telemetry:
         dt = self.config.dt if dt is None else dt
         q_cur = self.arm.read_joints()
-        if self._pivot_target is None:
+        if self._pivot_target is None or self.q_ref is None:
             self._sync_to_joints(q_cur)
 
         self._handle_buttons(cmd, q_cur)
@@ -124,6 +132,7 @@ class Controller:
             self._advance_trajectory(dt)
             q_send = self._solve_and_limit(q_cur)
         self.arm.write_joints(q_send)
+        self.q_ref = q_send.copy()  # advance the commanded reference (open-loop, noise-free)
 
         achieved = self.kin.fk(q_send)
         err_mm = float(np.linalg.norm(g.position_of(achieved) - g.position_of(self.target_pose)) * 1000)
@@ -143,13 +152,20 @@ class Controller:
             self.mode = ControlMode.POSE if self.mode is ControlMode.VELOCITY else ControlMode.VELOCITY
             self._traj = None
             self._sync_to_joints(q_cur)  # re-seat targets so neither mode lurches
+        # Gripper setpoints: snap fully open / closed. Applied here; the rate integration in
+        # step() then leaves it put (cmd.gripper is 0 unless a trigger is also held).
+        if cmd.gripper_open_set:
+            self.gripper_cmd = self.config.gripper_open
+        if cmd.gripper_close_set:
+            self.gripper_cmd = self.config.gripper_closed
 
     def _advance_joint_move(self, q_cur: np.ndarray) -> np.ndarray:
         """Slew the 5 arm joints straight toward ``self._joint_target``; clear when arrived."""
         target = self._joint_target
-        delta = np.clip(target[:5] - q_cur[:5], -self.config.joint_slew_deg, self.config.joint_slew_deg)
-        q_send = q_cur.copy().astype(float)
-        q_send[:5] = np.clip(q_cur[:5] + delta, self.joint_limits[:5, 0], self.joint_limits[:5, 1])
+        ref = self.q_ref  # slew from the commanded reference, not noisy feedback
+        delta = np.clip(target[:5] - ref[:5], -self.config.joint_slew_deg, self.config.joint_slew_deg)
+        q_send = ref.copy().astype(float)
+        q_send[:5] = np.clip(ref[:5] + delta, self.joint_limits[:5, 0], self.joint_limits[:5, 1])
         q_send[5] = self.gripper_cmd
         if np.max(np.abs(target[:5] - q_send[:5])) < 0.5:  # arrived (deg)
             self._joint_target = None
@@ -177,13 +193,14 @@ class Controller:
         """Live jog: sticks move the wrist pivot (IK over pan/lift/elbow); D-pad jogs the
         wrist joints directly. Fully decoupled, so pitch/roll never fight position."""
         c = self.config
+        ref = self.q_ref  # slew/seed from the commanded reference, never the noisy measurement
         # Wrist pivot position: EMA-smoothed velocity integrated into the target, clamped.
         desired_lin = cmd.lin * c.max_linear_vel
         a = c.vel_ema_alpha
         self._filt_lin = a * desired_lin + (1 - a) * self._filt_lin
         self._pivot_target = c.workspace.clamp(self._pivot_target + self._filt_lin * dt)
-        pivot_pose = g.make_transform(self._pivot_target, np.eye(3))
-        q_pos = self.kin_pos.ik(q_cur[:3], pivot_pose, orientation_weight=0.0)  # position-only
+        # Damped least-squares position IK over pan/lift/elbow, seeded from the reference.
+        q_pos = self.kin_pos.ik_position_dls(ref[:3], self._pivot_target, damping=c.dls_damping)
 
         # Wrist joints jogged directly (D-pad), rate-limited by wrist_speed, clamped to limits.
         self.wrist_flex_cmd = float(
@@ -201,14 +218,29 @@ class Controller:
             )
         )
 
-        q_send = q_cur.copy().astype(float)
-        delta = np.clip(q_pos[:3] - q_cur[:3], -c.joint_slew_deg, c.joint_slew_deg)
-        q_send[:3] = np.clip(q_cur[:3] + delta, self.joint_limits[:3, 0], self.joint_limits[:3, 1])
-        q_send[3] = self.wrist_flex_cmd
-        q_send[4] = self.wrist_roll_cmd
+        # Desired per-tick joint deltas (arm joints 0..4) relative to the reference.
+        delta = np.zeros(6)
+        delta[:3] = q_pos[:3] - ref[:3]
+        delta[3] = self.wrist_flex_cmd - ref[3]
+        delta[4] = self.wrist_roll_cmd - ref[4]
+        delta[:5] = self._limit_velocity_and_jerk(delta[:5])
+
+        q_send = ref.copy().astype(float)
+        q_send[:5] = np.clip(ref[:5] + delta[:5], self.joint_limits[:5, 0], self.joint_limits[:5, 1])
         q_send[5] = self.gripper_cmd
         self.target_pose = self.kin.fk(q_send)  # tip pose, for telemetry
         return q_send
+
+    def _limit_velocity_and_jerk(self, delta5: np.ndarray) -> np.ndarray:
+        """Clamp the 5 arm-joint per-tick deltas to the slew (velocity) cap, then limit how fast
+        that velocity may change (jerk cap). Limiting acceleration is what kills the buzz from
+        instant direction reversals. Updates the stored previous velocity."""
+        c = self.config
+        v = np.clip(delta5, -c.joint_slew_deg, c.joint_slew_deg)
+        dv = np.clip(v - self._prev_vel[:5], -c.joint_jerk_deg, c.joint_jerk_deg)
+        v = self._prev_vel[:5] + dv
+        self._prev_vel[:5] = v
+        return v
 
     def _advance_trajectory(self, dt: float) -> None:
         if self._traj is None:
@@ -227,13 +259,14 @@ class Controller:
             ori_w = self._pose_ori_w  # position-priority by default for goto/pose moves
         else:
             ori_w = c.ik_orientation_weight
+        ref = self.q_ref  # seed + slew from the commanded reference, not noisy feedback
         q_goal = self.kin.ik(
-            q_cur, self.target_pose, position_weight=c.ik_position_weight, orientation_weight=ori_w
+            ref, self.target_pose, position_weight=c.ik_position_weight, orientation_weight=ori_w
         )
-        q_send = q_cur.copy().astype(float)
+        q_send = ref.copy().astype(float)
         # Slew-rate limit the 5 arm joints (continuity); gripper is already rate-limited.
-        delta = np.clip(q_goal[:5] - q_cur[:5], -c.joint_slew_deg, c.joint_slew_deg)
-        q_send[:5] = q_cur[:5] + delta
+        delta = np.clip(q_goal[:5] - ref[:5], -c.joint_slew_deg, c.joint_slew_deg)
+        q_send[:5] = ref[:5] + delta
         q_send[5] = self.gripper_cmd
         # Joint-limit clamp for the arm joints.
         q_send[:5] = np.clip(q_send[:5], self.joint_limits[:5, 0], self.joint_limits[:5, 1])

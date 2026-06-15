@@ -123,3 +123,44 @@ class Kinematics:
                 q, target, position_weight=position_weight, orientation_weight=orientation_weight
             )
         return q
+
+    def ik_position_dls(
+        self,
+        current_joints_deg,
+        target_position,
+        *,
+        damping: float = 0.05,
+        iters: int = 12,
+        step_deg: float = 0.5,
+    ) -> np.ndarray:
+        """Damped least-squares IK for *position only*, over this instance's joint set.
+
+        Purpose-built for the velocity-jog wrist-pivot solve (pan/lift/elbow): far smoother and
+        faster than the general placo solver, with explicit singularity damping so the arm
+        steadies near rank-deficiency instead of jittering. The Jacobian is computed by finite
+        differences of ``fk`` position (no placo IK call), so the result is deterministic and
+        seed-stable. ``current_joints_deg`` seeds the iteration — pass the internal commanded
+        reference, never raw measured joints, for continuity.
+
+        Update rule per step: ``dq = J^T (J J^T + lambda^2 I)^{-1} e``, with ``J`` in metres/radian
+        and ``e`` the position error (metres). Returns joints in degrees.
+        """
+        q = np.asarray(current_joints_deg, dtype=float).copy()
+        target = np.asarray(target_position, dtype=float)
+        n = len(q)
+        lam2 = float(damping) ** 2
+        step_rad = np.deg2rad(step_deg)
+        eye = np.eye(3)
+        for _ in range(iters):
+            pos = self.fk(q)[:3, 3]
+            e = target - pos
+            if np.linalg.norm(e) < 1e-5:
+                break
+            J = np.empty((3, n))
+            for i in range(n):
+                dq = np.zeros(n)
+                dq[i] = step_deg
+                J[:, i] = (self.fk(q + dq)[:3, 3] - pos) / step_rad
+            dtheta = J.T @ np.linalg.solve(J @ J.T + lam2 * eye, e)  # radians
+            q = q + np.rad2deg(dtheta)
+        return q

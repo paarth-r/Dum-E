@@ -35,6 +35,7 @@ class ArmIO(Protocol):
     def is_calibrated(self) -> bool: ...
     def read_joints(self) -> np.ndarray: ...
     def write_joints(self, joints) -> None: ...
+    def relax(self) -> None: ...
 
 
 class SO101Arm:
@@ -80,19 +81,31 @@ class SO101Arm:
         action = {f"{m}.pos": float(joints[i]) for i, m in enumerate(MOTOR_ORDER)}
         self._robot.send_action(action)
 
+    def relax(self) -> None:
+        """Cut motor torque so the arm can be moved by hand (e.g. to capture a pose)."""
+        self._robot.bus.disable_torque()
+
 
 class SimArm:
-    """Kinematic simulation: adopts commanded joints immediately. Powers ``--dry-run``."""
+    """Kinematic simulation: adopts commanded joints immediately. Powers ``--dry-run``.
+
+    ``servo_noise_deg`` injects zero-mean Gaussian noise into ``read_joints`` for the five arm
+    joints (not the gripper), modelling the quantised/noisy feedback real Feetech servos report.
+    Used to reproduce hardware teleop jitter offline and verify the controller's internal
+    commanded-reference (``q_ref``) ignores it. Default 0.0 keeps the sim exact.
+    """
 
     name = "sim"
 
-    def __init__(self, initial_joints=None):
+    def __init__(self, initial_joints=None, *, servo_noise_deg: float = 0.0, seed: int = 0):
         self._joints = (
             np.array([0.0, -20.0, 20.0, 0.0, 0.0, 50.0], dtype=float)
             if initial_joints is None
             else np.asarray(initial_joints, dtype=float).copy()
         )
         self._connected = False
+        self.servo_noise_deg = float(servo_noise_deg)
+        self._rng = np.random.default_rng(seed)
 
     def connect(self) -> None:
         self._connected = True
@@ -104,7 +117,13 @@ class SimArm:
         return True
 
     def read_joints(self) -> np.ndarray:
-        return self._joints.copy()
+        q = self._joints.copy()
+        if self.servo_noise_deg > 0.0:
+            q[:5] += self._rng.normal(0.0, self.servo_noise_deg, size=5)
+        return q
 
     def write_joints(self, joints) -> None:
         self._joints = np.asarray(joints, dtype=float).copy()
+
+    def relax(self) -> None:
+        """No-op in simulation — there's no torque to disable."""

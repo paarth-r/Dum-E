@@ -54,7 +54,9 @@ class XboxMap:
     axis_lt: int = 4  # left trigger
     axis_rt: int = 5  # right trigger
 
-    btn_a: int = 0  # toggle velocity/pose (freeze) mode
+    btn_a: int = 0  # gripper -> full close (setpoint)
+    btn_b: int = 1  # toggle velocity/pose (freeze) mode
+    btn_y: int = 3  # gripper -> full open (setpoint)
 
     # D-pad (held): pitch = wrist_flex, roll = wrist_roll. SDL Xbox layout = buttons 11-14.
     btn_dpad_up: int = 11  # pitch up
@@ -85,8 +87,14 @@ class ControllerConfig:
     vel_ema_alpha: float = 0.35  # velocity low-pass (0..1, higher = snappier)
 
     # Smoothing / safety
-    joint_slew_deg: float = 6.0  # max commanded joint change per tick (per joint)
+    joint_slew_deg: float = 6.0  # max commanded joint change per tick (per joint, velocity cap)
+    joint_jerk_deg: float = 2.0  # max change in per-tick joint velocity (accel cap; smooths reversals)
     workspace: AxisBox = field(default_factory=AxisBox)
+
+    # Velocity-jog position IK: damped least-squares over pan/lift/elbow (smoother + faster than
+    # the general placo solver, with explicit singularity damping). Higher damping = steadier
+    # near singularities, slower tracking.
+    dls_damping: float = 0.05
 
     # IK weights. The SO-101 is a 5-DOF arm, so it cannot satisfy an arbitrary 6-DOF pose;
     # control is position-led with best-effort orientation.
