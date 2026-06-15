@@ -198,7 +198,7 @@ def cmd_sim(args) -> int:
     from dume.camera import CameraIntrinsics, camera_pose_from_fk
     from dume.input_xbox import XboxController
     from dume.service import DumeArm
-    from dume.sim_world import SceneObject, SimCamera, SimRenderer, SimScene
+    from dume.sim_world import OrbitCameraNav, SceneObject, SimCamera, SimRenderer, SimScene
 
     arm = DumeArm(dry_run=True)
     arm.connect()
@@ -212,6 +212,8 @@ def cmd_sim(args) -> int:
     # Lighten the GUI: no shadows, no side panels, no extra software renderer pass.
     for flag in (pb.COV_ENABLE_SHADOWS, pb.COV_ENABLE_GUI, pb.COV_ENABLE_TINY_RENDERER):
         pb.configureDebugVisualizer(flag, 0, physicsClientId=renderer.client)
+    nav = OrbitCameraNav(renderer)  # OnShape-style: left-drag orbit, Ctrl+left-drag pan, wheel zoom
+    CTRL_KEY = getattr(pb, "B3G_CONTROL", None)
 
     cam = None
     box_id = None
@@ -244,6 +246,13 @@ def cmd_sim(args) -> int:
 
     def on_tick(tel):
         renderer.set_joints(tel.joints_sent)  # mirror the commanded config into the 3D view
+        # OnShape-style camera. Reuse the keyboard controller's last events (getKeyboardEvents
+        # consumes on read) for the Ctrl check; fall back to a fresh read under an Xbox pad.
+        keys = getattr(source, "last_keys", None)
+        if keys is None:
+            keys = pb.getKeyboardEvents(physicsClientId=renderer.client)
+        ctrl = CTRL_KEY is not None and bool(keys.get(CTRL_KEY, 0) & pb.KEY_IS_DOWN)
+        nav.update(ctrl)
         if has_scene:
             # Magnet grasp: close the gripper near the box to pick it up; open to drop it.
             ee = arm.kin.fk(tel.joints_sent)[:3, 3]
@@ -277,6 +286,7 @@ def cmd_sim(args) -> int:
         "Left stick: X/Y | Right stick: Z | D-pad: wrist pitch/roll | LT/RT: gripper | "
         "A/Y: close/open | B: velocity/freeze | Ctrl-C: quit"
     )
+    _MOUSE_HELP = "Camera: drag = orbit, Ctrl+drag = pan, scroll = zoom"
 
     if args.keyboard:
         source = KeyboardController(renderer.client)
@@ -292,6 +302,7 @@ def cmd_sim(args) -> int:
             source.connect()
             print(f"No pad ({exc}); using keyboard.\n" + _KB_HELP)
 
+    print(_MOUSE_HELP)
     try:
         arm.run_teleop(source.poll, on_tick=on_tick)
     except KeyboardInterrupt:

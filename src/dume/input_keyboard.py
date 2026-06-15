@@ -32,6 +32,9 @@ class KeyboardController:
 
     def __init__(self, client: int):
         self._client = client
+        # Last raw keyboard-event dict from poll(). getKeyboardEvents() consumes events on read,
+        # so other consumers in the same tick (e.g. the camera nav's Ctrl check) read this instead.
+        self.last_keys: dict[int, int] = {}
 
     def connect(self) -> None:  # parity with XboxController
         pass
@@ -41,6 +44,7 @@ class KeyboardController:
 
     def poll(self) -> Command:
         keys = p.getKeyboardEvents(physicsClientId=self._client)
+        self.last_keys = keys
 
         def down(code: int) -> bool:
             return bool(keys.get(code, 0) & p.KEY_IS_DOWN)

@@ -364,6 +364,54 @@ def _depth_buffer_to_metres(depth_buf: np.ndarray) -> np.ndarray:
     return _FAR * _NEAR / (_FAR - (_FAR - _NEAR) * depth_buf)
 
 
+class OrbitCameraNav:
+    """OnShape-style GUI camera: left-drag orbits, Ctrl+left-drag pans, wheel zooms.
+
+    Authoritative — each :meth:`update` resets the debug camera from its own accumulated
+    yaw/pitch/target, so it wins over PyBullet's built-in mouse handling. Distance is read live
+    each tick, so the built-in scroll-wheel zoom is preserved. Mouse buttons come from
+    ``getMouseEvents`` (independent of the keyboard event queue); the caller passes whether Ctrl
+    is held (read from the shared keyboard events, since ``getKeyboardEvents`` consumes on read).
+    """
+
+    _MOVE, _BUTTON, _LEFT = 1, 2, 0  # PyBullet mouse eventType / buttonIndex
+
+    def __init__(self, renderer: "SimRenderer", rotate_gain: float = 0.3, pan_gain: float = 0.002):
+        self._client = renderer.client
+        ci = p.getDebugVisualizerCamera(physicsClientId=self._client)
+        self.yaw, self.pitch = float(ci[8]), float(ci[9])
+        self.target = list(ci[11])
+        self.rotate_gain, self.pan_gain = rotate_gain, pan_gain
+        self._drag = False
+        self._px = self._py = 0.0
+
+    def update(self, ctrl: bool) -> None:
+        ci = p.getDebugVisualizerCamera(physicsClientId=self._client)
+        dist = float(ci[10])
+        forward = np.asarray(ci[5], dtype=float)
+        up = np.asarray(ci[4], dtype=float)
+        right = np.cross(forward, up)
+        right = right / (np.linalg.norm(right) or 1.0)
+        upn = up / (np.linalg.norm(up) or 1.0)
+        for e in p.getMouseEvents(physicsClientId=self._client):
+            if e[0] == self._BUTTON and e[3] == self._LEFT:
+                if e[4] & p.KEY_WAS_TRIGGERED:
+                    self._drag = True
+                    self._px, self._py = e[1], e[2]
+                elif e[4] & p.KEY_WAS_RELEASED:
+                    self._drag = False
+            elif e[0] == self._MOVE and self._drag:
+                dx, dy = e[1] - self._px, e[2] - self._py
+                self._px, self._py = e[1], e[2]
+                if ctrl:  # pan: slide the look-at target in the camera plane
+                    s = self.pan_gain * max(dist, 0.1)
+                    self.target = (np.asarray(self.target) - right * dx * s + upn * dy * s).tolist()
+                else:  # orbit
+                    self.yaw += dx * self.rotate_gain
+                    self.pitch = float(np.clip(self.pitch - dy * self.rotate_gain, -89.0, 89.0))
+        p.resetDebugVisualizerCamera(dist, self.yaw, self.pitch, self.target, physicsClientId=self._client)
+
+
 class SimCamera:
     """Synthetic camera that renders from the current arm pose via PyBullet.
 
