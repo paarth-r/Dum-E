@@ -195,7 +195,7 @@ def cmd_sim(args) -> int:
     import numpy as _np
 
     from dume.camera import CameraIntrinsics, camera_pose_from_fk
-    from dume.input_xbox import Command, XboxController
+    from dume.input_xbox import XboxController
     from dume.service import DumeArm
     from dume.sim_world import SceneObject, SimCamera, SimRenderer, SimScene
 
@@ -228,31 +228,38 @@ def cmd_sim(args) -> int:
             print(f"camera sees {len(dets)} object(s)" + (
                 f" nearest~{_np.min(dets.depths):.3f}m" if len(dets) else ""), end="\r", flush=True)
 
-    xb = XboxController(mapping=arm.config.xbox)
-    try:
-        xb.connect()
-        print(f"Controller: {xb.name}")
-    except Exception as exc:  # no pad attached — still show the arm, just won't move
-        print(f"No controller ({exc}). Showing the arm; Ctrl-C to quit.")
-        xb = None
+    from dume.input_keyboard import KeyboardController
 
-    print(
+    _KB_HELP = (
+        "Keyboard (focus the PyBullet window): WASD = X/Y, R/F = Z up/down, "
+        "arrows = wrist pitch/roll, O/C = gripper open/close, [ / ] = snap closed/open, "
+        "M = velocity/freeze, Ctrl-C in this terminal = quit"
+    )
+    _PAD_HELP = (
         "Left stick: X/Y | Right stick: Z | D-pad: wrist pitch/roll | LT/RT: gripper | "
         "A/Y: close/open | B: velocity/freeze | Ctrl-C: quit"
     )
+
+    if args.keyboard:
+        source = KeyboardController(renderer.client)
+        source.connect()
+        print("Input: keyboard.\n" + _KB_HELP)
+    else:
+        try:
+            source = XboxController(mapping=arm.config.xbox)
+            source.connect()
+            print(f"Controller: {source.name}\n" + _PAD_HELP)
+        except Exception as exc:  # no pad attached — fall back to keyboard
+            source = KeyboardController(renderer.client)
+            source.connect()
+            print(f"No pad ({exc}); using keyboard.\n" + _KB_HELP)
+
     try:
-        if xb is not None:
-            arm.run_teleop(xb.poll, on_tick=on_tick)
-        else:
-            import time as _time
-            while True:  # no pad: just hold pose so the window stays live
-                on_tick(arm.controller.step(Command()))
-                _time.sleep(arm.config.dt)
+        arm.run_teleop(source.poll, on_tick=on_tick)
     except KeyboardInterrupt:
         pass
     finally:
-        if xb is not None:
-            xb.disconnect()
+        source.disconnect()
         renderer.disconnect()
         arm.disconnect()
         print("\nStopped.")
@@ -313,6 +320,8 @@ def build_parser() -> argparse.ArgumentParser:
     psim.add_argument("--scene", action="store_true", help="spawn a demo target object")
     psim.add_argument("--camera", action="store_true",
                       help="attach the end-effector camera and print live detections (implies --scene)")
+    psim.add_argument("--keyboard", action="store_true",
+                      help="drive with the keyboard instead of an Xbox pad (also the no-pad fallback)")
     return p
 
 
