@@ -378,6 +378,10 @@ class SimCamera:
     pose_provider:
         Zero-argument callable that returns the 4x4 camera-in-world pose.
         Typically ``lambda: camera_pose_from_fk(kin, arm.read_joints())``.
+    hardware:
+        Use the GPU renderer (``ER_BULLET_HARDWARE_OPENGL``) instead of the CPU software
+        rasterizer (``ER_TINY_RENDERER``). The software path is *very* slow — keep ``hardware``
+        on in a GUI session; tests in DIRECT mode use software for reliability.
     """
 
     def __init__(
@@ -385,10 +389,12 @@ class SimCamera:
         renderer: SimRenderer,
         intrinsics: CameraIntrinsics,
         pose_provider: Callable[[], np.ndarray],
+        hardware: bool = False,
     ) -> None:
         self._renderer = renderer
         self.intrinsics = intrinsics
         self._pose_provider = pose_provider
+        self._render_flag = p.ER_BULLET_HARDWARE_OPENGL if hardware else p.ER_TINY_RENDERER
         # Cache last seg buffer for detect() to avoid double-render.
         self._last_seg: np.ndarray | None = None
         self._last_depth_m: np.ndarray | None = None
@@ -417,7 +423,7 @@ class SimCamera:
             height=H,
             viewMatrix=view,
             projectionMatrix=proj,
-            renderer=p.ER_TINY_RENDERER,
+            renderer=self._render_flag,
             physicsClientId=self._renderer.client,
         )
 

@@ -31,11 +31,12 @@ from dume import geometry as g
 # orthogonal to the wrist axis, along the gripper's reach. Empirically (FK at HOME) the gripper
 # approach direction is gripper_frame_link's +Z and the wrist axis is its +Y — so the optical
 # +Z (OpenCV: +z forward) aligns with gripper +Z and the rotation is IDENTITY (optical axes ==
-# gripper_frame axes). Any final image-roll + the exact under-claw translation need hardware
-# calibration; the translation below is a placeholder (a few cm under/behind the claw hole).
-# Single source of truth could instead be a fixed `camera_optical_link` in the URDF (see notes).
+# gripper_frame axes). The camera is a 38 mm case glued centred into the claw hole looking out
+# along the approach, so it is laterally centred (x=y=0) and the optical centre sits ~one case-
+# depth (~20 mm) behind the hole along -Z. Final image-roll + the exact offset need hardware
+# calibration. A fixed `camera_optical_link` in the URDF could own this instead (see notes).
 # ---------------------------------------------------------------------------
-T_CAM_MOUNT: np.ndarray = g.make_transform([0.0, -0.03, -0.02], np.eye(3))
+T_CAM_MOUNT: np.ndarray = g.make_transform([0.0, 0.0, -0.02], np.eye(3))
 
 
 @dataclass(frozen=True)

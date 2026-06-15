@@ -209,6 +209,9 @@ def cmd_sim(args) -> int:
     has_scene = args.scene or args.camera
     renderer = SimRenderer(urdf_path=arm.config.urdf_path, gui=True, dynamic=has_scene)
     renderer.set_joints(arm.get_joints())
+    # Lighten the GUI: no shadows, no side panels, no extra software renderer pass.
+    for flag in (pb.COV_ENABLE_SHADOWS, pb.COV_ENABLE_GUI, pb.COV_ENABLE_TINY_RENDERER):
+        pb.configureDebugVisualizer(flag, 0, physicsClientId=renderer.client)
 
     cam = None
     box_id = None
@@ -220,8 +223,10 @@ def cmd_sim(args) -> int:
         renderer.load_scene(scene)
         box_id = renderer.scene_bodies["target"]
         if args.camera:
-            intr = CameraIntrinsics.from_fov(320, 240, fov_y_deg=60.0)
-            cam = SimCamera(renderer, intr, lambda: camera_pose_from_fk(arm.kin, arm.get_joints()))
+            # Barebones vision: small frame, GPU renderer, throttled — see CAM_EVERY below.
+            intr = CameraIntrinsics.from_fov(160, 120, fov_y_deg=60.0)
+            cam = SimCamera(renderer, intr, lambda: camera_pose_from_fk(arm.kin, arm.get_joints()),
+                            hardware=True)
 
     # Optional live camera feed window (separate from the 3D view).
     cv2 = None
@@ -235,6 +240,7 @@ def cmd_sim(args) -> int:
 
     state = {"i": 0, "holding": False}
     GRASP_DIST, CLOSE_T, OPEN_T = 0.07, 40.0, 60.0  # m / gripper units
+    CAM_EVERY = 5  # render the camera every 5th control tick (~10 Hz vs the 50 Hz loop)
 
     def on_tick(tel):
         renderer.set_joints(tel.joints_sent)  # mirror the commanded config into the 3D view
@@ -249,17 +255,16 @@ def cmd_sim(args) -> int:
                 renderer.release(); state["holding"] = False
             renderer.step_physics()
         state["i"] += 1
-        if cam is not None:
-            frame = cam.capture()  # re-render from the CURRENT EE pose every tick
+        if cam is not None and state["i"] % CAM_EVERY == 0:  # throttled — vision is the slow part
+            frame = cam.capture()  # re-render from the CURRENT EE pose
             if cv2 is not None:
                 cv2.imshow("dume EE camera", frame.rgb[:, :, ::-1])  # RGB->BGR
                 cv2.waitKey(1)
-            if state["i"] % 25 == 0:
-                dets = cam.detect()
-                grab = " [HOLDING]" if state["holding"] else ""
-                print(f"camera sees {len(dets)} object(s)" + (
-                    f" nearest~{_np.min(dets.depths):.3f}m" if len(dets) else "") + grab,
-                    end="\r", flush=True)
+            dets = cam.detect()
+            grab = " [HOLDING]" if state["holding"] else ""
+            print(f"camera sees {len(dets)} object(s)" + (
+                f" nearest~{_np.min(dets.depths):.3f}m" if len(dets) else "") + grab,
+                end="\r", flush=True)
 
     from dume.input_keyboard import KeyboardController
 
