@@ -193,6 +193,7 @@ def cmd_sim(args) -> int:
     object; with ``--camera`` the end-effector camera's live detections print each tick.
     """
     import numpy as _np
+    import pybullet as pb
 
     from dume.camera import CameraIntrinsics, camera_pose_from_fk
     from dume.input_xbox import XboxController
@@ -205,28 +206,60 @@ def cmd_sim(args) -> int:
         arm.arm.servo_noise_deg = float(args.noise)
         print(f"Injecting {args.noise} deg servo-feedback noise (the smoothing should absorb it).")
 
-    renderer = SimRenderer(urdf_path=arm.config.urdf_path, gui=True)
+    has_scene = args.scene or args.camera
+    renderer = SimRenderer(urdf_path=arm.config.urdf_path, gui=True, dynamic=has_scene)
     renderer.set_joints(arm.get_joints())
 
     cam = None
-    if args.scene or args.camera:
+    box_id = None
+    if has_scene:
         scene = SimScene()
+        # Dynamic (mass > 0) so it rests on the ground plane and can be grabbed.
         scene.add(SceneObject("target", "box", half_extents=[0.025, 0.025, 0.025],
-                              position=[0.30, 0.0, 0.10], rgba=[0.1, 0.6, 1.0, 1.0]))
+                              position=[0.28, 0.0, 0.05], rgba=[0.1, 0.6, 1.0, 1.0], mass=0.05))
         renderer.load_scene(scene)
+        box_id = renderer.scene_bodies["target"]
         if args.camera:
             intr = CameraIntrinsics.from_fov(320, 240, fov_y_deg=60.0)
             cam = SimCamera(renderer, intr, lambda: camera_pose_from_fk(arm.kin, arm.get_joints()))
 
-    state = {"i": 0}
+    # Optional live camera feed window (separate from the 3D view).
+    cv2 = None
+    if cam is not None:
+        try:
+            import cv2 as _cv2
+            cv2 = _cv2
+            cv2.namedWindow("dume EE camera", cv2.WINDOW_NORMAL)
+        except Exception:
+            cv2 = None
+
+    state = {"i": 0, "holding": False}
+    GRASP_DIST, CLOSE_T, OPEN_T = 0.07, 40.0, 60.0  # m / gripper units
 
     def on_tick(tel):
         renderer.set_joints(tel.joints_sent)  # mirror the commanded config into the 3D view
+        if has_scene:
+            # Magnet grasp: close the gripper near the box to pick it up; open to drop it.
+            ee = arm.kin.fk(tel.joints_sent)[:3, 3]
+            bpos, _ = pb.getBasePositionAndOrientation(box_id, physicsClientId=renderer.client)
+            dist = float(_np.linalg.norm(ee - _np.asarray(bpos)))
+            if not state["holding"] and tel.gripper < CLOSE_T and dist < GRASP_DIST:
+                renderer.attach(box_id); state["holding"] = True
+            elif state["holding"] and tel.gripper > OPEN_T:
+                renderer.release(); state["holding"] = False
+            renderer.step_physics()
         state["i"] += 1
-        if cam is not None and state["i"] % 25 == 0:
-            dets = cam.detect()
-            print(f"camera sees {len(dets)} object(s)" + (
-                f" nearest~{_np.min(dets.depths):.3f}m" if len(dets) else ""), end="\r", flush=True)
+        if cam is not None:
+            frame = cam.capture()  # re-render from the CURRENT EE pose every tick
+            if cv2 is not None:
+                cv2.imshow("dume EE camera", frame.rgb[:, :, ::-1])  # RGB->BGR
+                cv2.waitKey(1)
+            if state["i"] % 25 == 0:
+                dets = cam.detect()
+                grab = " [HOLDING]" if state["holding"] else ""
+                print(f"camera sees {len(dets)} object(s)" + (
+                    f" nearest~{_np.min(dets.depths):.3f}m" if len(dets) else "") + grab,
+                    end="\r", flush=True)
 
     from dume.input_keyboard import KeyboardController
 
@@ -260,6 +293,8 @@ def cmd_sim(args) -> int:
         pass
     finally:
         source.disconnect()
+        if cv2 is not None:
+            cv2.destroyAllWindows()
         renderer.disconnect()
         arm.disconnect()
         print("\nStopped.")

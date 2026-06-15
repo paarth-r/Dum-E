@@ -71,6 +71,7 @@ class SceneObject:
     radius: float = 0.05
     position: list[float] | np.ndarray = field(default_factory=lambda: [0.0, 0.0, 0.0])
     rgba: list[float] | np.ndarray = field(default_factory=lambda: [1.0, 0.0, 0.0, 1.0])
+    mass: float = 0.0  # 0 = static prop; >0 = dynamic (falls under gravity, grabbable)
 
 
 class SimScene:
@@ -107,11 +108,25 @@ class SimRenderer:
     gui:
         If ``True`` open a PyBullet GUI window.  Use only interactively; tests must use
         the default ``False`` (DIRECT / headless).
+    dynamic:
+        If ``True`` enable gravity, a ground plane, and physics stepping so objects with mass
+        fall and can be grasped (see :meth:`attach`).  Default ``False`` keeps the pure
+        kinematic behaviour (arm teleported, props static) that the tests rely on.
     """
 
-    def __init__(self, urdf_path: str = DEFAULT_URDF, gui: bool = False) -> None:
+    def __init__(self, urdf_path: str = DEFAULT_URDF, gui: bool = False, dynamic: bool = False) -> None:
         self._client: int = p.connect(p.GUI if gui else p.DIRECT)
-        p.setGravity(0, 0, 0, physicsClientId=self._client)
+        self.dynamic = dynamic
+        self._plane: int | None = None
+        self._grasp_constraint: int | None = None
+        if dynamic:
+            p.setGravity(0, 0, -9.81, physicsClientId=self._client)
+            # Procedural ground plane (no pybullet_data dependency — the source build ships none).
+            plane_col = p.createCollisionShape(p.GEOM_PLANE, physicsClientId=self._client)
+            self._plane = p.createMultiBody(0, plane_col, physicsClientId=self._client)
+            p.changeDynamics(self._plane, -1, lateralFriction=1.0, physicsClientId=self._client)
+        else:
+            p.setGravity(0, 0, 0, physicsClientId=self._client)
         self._arm_body: int = p.loadURDF(
             urdf_path,
             useFixedBase=True,
@@ -211,16 +226,76 @@ class SimRenderer:
                 raise ValueError(f"Unknown shape {obj.shape!r}; expected 'box' or 'sphere'")
 
             body_id = p.createMultiBody(
-                baseMass=0,
+                baseMass=obj.mass,
                 baseCollisionShapeIndex=col_id,
                 baseVisualShapeIndex=vis_id,
                 basePosition=pos,
                 physicsClientId=self._client,
             )
+            if obj.mass > 0:
+                # Friction so a grasped/resting object behaves sensibly.
+                p.changeDynamics(body_id, -1, lateralFriction=1.0, physicsClientId=self._client)
             self._scene_bodies[obj.name] = body_id
             self._body_to_idx[body_id] = obj_idx
 
         return dict(self._scene_bodies)
+
+    # ------------------------------------------------------------------
+    # Physics + grasp (only meaningful when dynamic=True)
+    # ------------------------------------------------------------------
+
+    def step_physics(self) -> None:
+        """Advance one physics step if dynamic; no-op otherwise."""
+        if self.dynamic:
+            p.stepSimulation(physicsClientId=self._client)
+
+    def link_index(self, link_name: str) -> int:
+        """PyBullet link index whose child link is *link_name*; -1 (base) if not found."""
+        for i in range(p.getNumJoints(self._arm_body, physicsClientId=self._client)):
+            info = p.getJointInfo(self._arm_body, i, physicsClientId=self._client)
+            if info[12].decode() == link_name:
+                return i
+        return -1
+
+    def _link_world_pose(self, link_index: int):
+        if link_index < 0:
+            return p.getBasePositionAndOrientation(self._arm_body, physicsClientId=self._client)
+        ls = p.getLinkState(self._arm_body, link_index, physicsClientId=self._client)
+        return ls[4], ls[5]  # worldLinkFramePosition, worldLinkFrameOrientation
+
+    def attach(self, body_id: int, link_name: str = "gripper_frame_link") -> None:
+        """Rigidly attach *body_id* to a gripper link at its current relative pose ("magnet"
+        grasp). Stable with the kinematic (teleported) arm — no friction tuning needed. No-op
+        if already holding something."""
+        if self._grasp_constraint is not None:
+            return
+        li = self.link_index(link_name)
+        lp, lo = self._link_world_pose(li)
+        bp, bo = p.getBasePositionAndOrientation(body_id, physicsClientId=self._client)
+        inv_p, inv_o = p.invertTransform(lp, lo)
+        rel_p, rel_o = p.multiplyTransforms(inv_p, inv_o, bp, bo)  # box pose in link frame
+        self._grasp_constraint = p.createConstraint(
+            parentBodyUniqueId=self._arm_body,
+            parentLinkIndex=li,
+            childBodyUniqueId=body_id,
+            childLinkIndex=-1,
+            jointType=p.JOINT_FIXED,
+            jointAxis=[0, 0, 0],
+            parentFramePosition=list(rel_p),
+            childFramePosition=[0, 0, 0],
+            parentFrameOrientation=list(rel_o),
+            physicsClientId=self._client,
+        )
+
+    def release(self) -> None:
+        """Release any grasped object (it then falls under gravity). No-op if not holding."""
+        if self._grasp_constraint is not None:
+            p.removeConstraint(self._grasp_constraint, physicsClientId=self._client)
+            self._grasp_constraint = None
+
+    @property
+    def holding(self) -> bool:
+        return self._grasp_constraint is not None
 
     # ------------------------------------------------------------------
     # Lifecycle
