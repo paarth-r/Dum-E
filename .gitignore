@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 *.egg-info/
 .pytest_cache/
+
+# PyBullet GUI writes this on launch
+0_VRDemoSettings.txt
