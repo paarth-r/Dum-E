@@ -3,6 +3,7 @@
     dume find-port              discover the arm's serial port (wraps lerobot)
     dume calibrate              one-time SO-101 calibration (wraps lerobot)
     dume axes                   print live controller axes/buttons (verify mapping)
+    dume save-pose [--name N]   hand-pose the arm, hit Enter to save its joints (default: start)
     dume run [--dry-run]        Xbox teleoperation (velocity jog + pose mode)
     dume goto X Y Z R P Y       move to an absolute pose (metres, radians)
 """
@@ -43,24 +44,55 @@ def cmd_calibrate(args) -> int:
 
 
 def cmd_axes(args) -> int:
+    from dume.config import XboxMap
     from dume.input_xbox import XboxController
+    from dume.padview import render_pad
 
     xb = XboxController()
     xb.connect()
-    print(f"Connected: {xb.name}. Move sticks/triggers/buttons. Ctrl-C to quit.")
+    m = XboxMap()
+    print(f"Connected: {xb.name}. Move sticks/triggers/buttons. Ctrl-C to quit.\n")
+
     import pygame
 
+    def trig(idx: int) -> float:
+        return float(np.clip((xb._axis(idx) + 1.0) / 2.0, 0.0, 1.0))
+
+    sys.stdout.write("\033[?25l")  # hide cursor while we repaint in place
+    first = True
     try:
         while True:
             pygame.event.pump()
-            js = xb._js
-            axes = [round(js.get_axis(i), 2) for i in range(js.get_numaxes())]
-            btns = [i for i in range(js.get_numbuttons()) if js.get_button(i)]
-            print(f"axes={axes}  buttons_down={btns}        ", end="\r", flush=True)
-            time.sleep(0.1)
+            buttons = {
+                "A:close": xb._button(m.btn_a),
+                "Y:open": xb._button(m.btn_y),
+                "B:mode": xb._button(m.btn_b),
+                "D-Up": xb._button(m.btn_dpad_up),
+                "D-Down": xb._button(m.btn_dpad_down),
+                "D-Left": xb._button(m.btn_dpad_left),
+                "D-Right": xb._button(m.btn_dpad_right),
+            }
+            frame = render_pad(
+                xb._axis(m.axis_left_x),
+                xb._axis(m.axis_left_y),
+                xb._axis(m.axis_right_x),
+                xb._axis(m.axis_right_y),
+                trig(m.axis_lt),
+                trig(m.axis_rt),
+                buttons,
+            )
+            lines = frame.split("\n")
+            if not first:
+                sys.stdout.write(f"\033[{len(lines)}A")  # back up to the top of the block
+            sys.stdout.write("\r" + "\n".join(line + "\033[K" for line in lines) + "\n")
+            sys.stdout.flush()
+            first = False
+            time.sleep(0.05)
     except KeyboardInterrupt:
-        print()
+        pass
     finally:
+        sys.stdout.write("\033[?25h\n")  # restore cursor
+        sys.stdout.flush()
         xb.disconnect()
     return 0
 
@@ -85,8 +117,41 @@ def _status_printer(every: int = 5):
     return on_tick
 
 
+def cmd_save_pose(args) -> int:
+    from dume.arm import MOTOR_ORDER, SO101Arm
+    from dume.poses import DEFAULT_JOINT_STORE, JointPoseStore
+
+    cfg = ControllerConfig()
+    arm = SO101Arm(args.port or cfg.port, args.id or cfg.robot_id)
+    arm.connect()
+    try:
+        if not arm.is_calibrated():
+            print("Arm is not calibrated. Run `dume calibrate` first.", file=sys.stderr)
+            return 2
+        if args.relax:
+            arm.relax()
+            print("Torque disabled — move the arm by hand to the pose you want.")
+        else:
+            print("Torque held — pose the arm however you like (e.g. via teleop).")
+        try:
+            input(f"Press Enter to save '{args.name}' (Ctrl-C to cancel)... ")
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled — nothing saved.")
+            return 1
+        joints = arm.read_joints()
+    finally:
+        arm.disconnect()
+
+    store = JointPoseStore(args.file or DEFAULT_JOINT_STORE)
+    store.set(args.name, joints)
+    pretty = ", ".join(f"{m}={joints[i]:.1f}" for i, m in enumerate(MOTOR_ORDER))
+    print(f"Saved '{args.name}' to {store.path}\n  {pretty}")
+    return 0
+
+
 def cmd_run(args) -> int:
     from dume.input_xbox import XboxController
+    from dume.poses import DEFAULT_JOINT_STORE, JointPoseStore
     from dume.service import DumeArm
 
     with DumeArm(dry_run=args.dry_run) as arm:
@@ -96,18 +161,101 @@ def cmd_run(args) -> int:
         print(f"Mode: {'DRY-RUN (no motion)' if args.dry_run else 'LIVE'}")
         if args.dry_run:
             print("No hardware will move. Use this to feel out IK + smoothing.")
+        if not args.no_start_pose:
+            store = JointPoseStore(args.start_file or DEFAULT_JOINT_STORE)
+            if store.has(args.start_pose):
+                print(f"Moving to saved start pose '{args.start_pose}'...")
+                arm.goto_joints(store.get(args.start_pose))
+                arm.controller.home_joints = store.get(args.start_pose)  # 'home' returns here
+            else:
+                print(f"No saved '{args.start_pose}' pose — starting from current position.")
         xb = XboxController(mapping=arm.config.xbox)
         xb.connect()
         print(f"Controller: {xb.name}")
         print(
             "Left stick: X/Y  |  Right stick: Z  |  D-pad up/down: pitch  |  D-pad L/R: roll\n"
-            "LT/RT: gripper  |  A: velocity/freeze mode  |  Ctrl-C: quit"
+            "LT: open  RT: close  |  A: full close  Y: full open  |  B: velocity/freeze mode  |  Ctrl-C: quit"
         )
         try:
             arm.run_teleop(xb.poll, on_tick=_status_printer())
         finally:
             xb.disconnect()
             print("\nStopped.")
+    return 0
+
+
+def cmd_sim(args) -> int:
+    """Interactive PyBullet sim: drive the SO-101 in a 3D window with the Xbox controller.
+
+    Pure kinematic mirror — the controller runs exactly as on hardware (over a SimArm), and the
+    renderer reflects each commanded joint vector. ``--noise`` injects synthetic servo feedback
+    noise so you can feel that the q_ref smoothing keeps motion clean. ``--scene`` spawns a demo
+    object; with ``--camera`` the end-effector camera's live detections print each tick.
+    """
+    import numpy as _np
+
+    from dume.camera import CameraIntrinsics, camera_pose_from_fk
+    from dume.input_xbox import Command, XboxController
+    from dume.service import DumeArm
+    from dume.sim_world import SceneObject, SimCamera, SimRenderer, SimScene
+
+    arm = DumeArm(dry_run=True)
+    arm.connect()
+    if args.noise > 0:
+        arm.arm.servo_noise_deg = float(args.noise)
+        print(f"Injecting {args.noise} deg servo-feedback noise (the smoothing should absorb it).")
+
+    renderer = SimRenderer(urdf_path=arm.config.urdf_path, gui=True)
+    renderer.set_joints(arm.get_joints())
+
+    cam = None
+    if args.scene or args.camera:
+        scene = SimScene()
+        scene.add(SceneObject("target", "box", half_extents=[0.025, 0.025, 0.025],
+                              position=[0.30, 0.0, 0.10], rgba=[0.1, 0.6, 1.0, 1.0]))
+        renderer.load_scene(scene)
+        if args.camera:
+            intr = CameraIntrinsics.from_fov(320, 240, fov_y_deg=60.0)
+            cam = SimCamera(renderer, intr, lambda: camera_pose_from_fk(arm.kin, arm.get_joints()))
+
+    state = {"i": 0}
+
+    def on_tick(tel):
+        renderer.set_joints(tel.joints_sent)  # mirror the commanded config into the 3D view
+        state["i"] += 1
+        if cam is not None and state["i"] % 25 == 0:
+            dets = cam.detect()
+            print(f"camera sees {len(dets)} object(s)" + (
+                f" nearest~{_np.min(dets.depths):.3f}m" if len(dets) else ""), end="\r", flush=True)
+
+    xb = XboxController(mapping=arm.config.xbox)
+    try:
+        xb.connect()
+        print(f"Controller: {xb.name}")
+    except Exception as exc:  # no pad attached — still show the arm, just won't move
+        print(f"No controller ({exc}). Showing the arm; Ctrl-C to quit.")
+        xb = None
+
+    print(
+        "Left stick: X/Y | Right stick: Z | D-pad: wrist pitch/roll | LT/RT: gripper | "
+        "A/Y: close/open | B: velocity/freeze | Ctrl-C: quit"
+    )
+    try:
+        if xb is not None:
+            arm.run_teleop(xb.poll, on_tick=on_tick)
+        else:
+            import time as _time
+            while True:  # no pad: just hold pose so the window stays live
+                on_tick(arm.controller.step(Command()))
+                _time.sleep(arm.config.dt)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if xb is not None:
+            xb.disconnect()
+        renderer.disconnect()
+        arm.disconnect()
+        print("\nStopped.")
     return 0
 
 
@@ -137,12 +285,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("axes", help="print live controller axes/buttons")
 
+    ps = sub.add_parser("save-pose", help="hand-pose the arm and save its joints to JSON")
+    ps.add_argument("--name", default="start", help="name to save under (default: start)")
+    ps.add_argument("--file", help="JSON store path (default: ~/.dume/joint_poses.json)")
+    ps.add_argument("--port")
+    ps.add_argument("--id")
+    ps.add_argument(
+        "--no-relax",
+        dest="relax",
+        action="store_false",
+        help="keep motor torque on (don't free the arm for hand-posing)",
+    )
+
     pr = sub.add_parser("run", help="Xbox teleoperation")
     pr.add_argument("--dry-run", action="store_true", help="no motor motion (simulation)")
+    pr.add_argument("--start-pose", default="start", help="saved joint pose to start at (default: start)")
+    pr.add_argument("--start-file", help="JSON store path (default: ~/.dume/joint_poses.json)")
+    pr.add_argument("--no-start-pose", action="store_true", help="don't move to a start pose on launch")
 
     pg = sub.add_parser("goto", help="move to an absolute pose")
     pg.add_argument("pose", nargs=6, type=float, metavar=("X", "Y", "Z", "ROLL", "PITCH", "YAW"))
     pg.add_argument("--dry-run", action="store_true")
+
+    psim = sub.add_parser("sim", help="interactive PyBullet sim, Xbox-driven")
+    psim.add_argument("--noise", type=float, default=0.0,
+                      help="inject N deg servo-feedback noise to feel the smoothing (default 0)")
+    psim.add_argument("--scene", action="store_true", help="spawn a demo target object")
+    psim.add_argument("--camera", action="store_true",
+                      help="attach the end-effector camera and print live detections (implies --scene)")
     return p
 
 
@@ -152,8 +322,10 @@ def main(argv=None) -> int:
         "find-port": cmd_find_port,
         "calibrate": cmd_calibrate,
         "axes": cmd_axes,
+        "save-pose": cmd_save_pose,
         "run": cmd_run,
         "goto": cmd_goto,
+        "sim": cmd_sim,
     }[args.command](args)
 
 
