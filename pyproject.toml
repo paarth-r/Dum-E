@@ -8,6 +8,7 @@ dependencies = [
     "lerobot[feetech,kinematics,gamepad]>=0.5.1",
     "numpy>=1.26",
     "scipy>=1.11",
+    "pybullet>=3.2",
 ]
 
 [project.optional-dependencies]
