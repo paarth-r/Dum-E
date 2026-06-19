@@ -123,8 +123,8 @@ class Controller:
         c = self.config
         if self._joint_target is None:
             if self.gripper_mode is GripperMode.SQUEEZE:
-                # RT position IS the openness: released -> open, fully depressed -> closed.
-                self.gripper_cmd = c.gripper_open - cmd.rt * (c.gripper_open - c.gripper_closed)
+                # RT position IS the openness: released -> closed (default), squeezed -> open.
+                self.gripper_cmd = c.gripper_closed + cmd.rt * (c.gripper_open - c.gripper_closed)
             else:  # RATE: LT opens, RT closes, integrated.
                 self.gripper_cmd = float(
                     np.clip(

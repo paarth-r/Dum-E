@@ -10,7 +10,7 @@ Semantic mapping (the only bindings):
 - L3 / R3 click   -> Z up / Z down (summed with right-stick Y)
 - D-pad up/down   -> wrist pitch (wrist_flex), while held
 - D-pad left/right-> wrist roll (wrist_roll), while held
-- RT (+ LT)       -> gripper (SQUEEZE: rt = openness; RATE: lt opens, rt closes)
+- RT (+ LT)       -> gripper (SQUEEZE: released = closed, squeezed = open; RATE: lt opens, rt closes)
 - X               -> toggle gripper mode (squeeze <-> rate)
 - B               -> toggle velocity / pose (freeze) mode
 """

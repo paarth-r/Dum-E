@@ -33,12 +33,12 @@ def controller(kin, tmp_path):
 
 def test_zero_command_holds_arm_still(controller):
     # The 5 arm joints must not drift on a zero command. (In SQUEEZE mode a released trigger
-    # means "fully open", so the gripper settling open is expected and checked separately.)
+    # means "fully closed", so the gripper settling closed is expected and checked separately.)
     start = controller.arm.read_joints().copy()
     for _ in range(20):
         controller.step(Command())
     assert np.allclose(controller.arm.read_joints()[:5], start[:5], atol=1e-6)
-    assert controller.gripper_cmd == pytest.approx(controller.config.gripper_open)
+    assert controller.gripper_cmd == pytest.approx(controller.config.gripper_closed)
 
 
 def test_velocity_jog_moves_forward_in_x(controller):
@@ -142,10 +142,10 @@ def test_telemetry_reports_awareness(controller):
 def test_gripper_squeeze_is_absolute(controller):
     """SQUEEZE (default): RT position maps directly to jaw openness, no integration."""
     cfg = controller.config
-    controller.step(Command(rt=0.0))  # released -> fully open
-    assert controller.gripper_cmd == pytest.approx(cfg.gripper_open)
-    controller.step(Command(rt=1.0))  # fully depressed -> fully closed
+    controller.step(Command(rt=0.0))  # released -> fully closed (default)
     assert controller.gripper_cmd == pytest.approx(cfg.gripper_closed)
+    controller.step(Command(rt=1.0))  # fully squeezed -> fully open
+    assert controller.gripper_cmd == pytest.approx(cfg.gripper_open)
     controller.step(Command(rt=0.5))  # half -> midpoint, in one tick (absolute)
     assert controller.gripper_cmd == pytest.approx((cfg.gripper_open + cfg.gripper_closed) / 2)
 

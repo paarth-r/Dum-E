@@ -11,7 +11,7 @@ Keymap::
     R / F      move +Z / -Z        (up / down)
     Up / Down  wrist pitch         (wrist_flex)
     Left/Right wrist roll          (wrist_roll)
-    O / C      gripper open / close (lt/rt; in SQUEEZE, hold C = closed, release = open)
+    O / C      gripper open / close (lt/rt; in SQUEEZE, hold C = open, release = closed)
     G          toggle gripper mode (squeeze / rate) (tap)
     M          toggle velocity / freeze mode (tap)
 """
