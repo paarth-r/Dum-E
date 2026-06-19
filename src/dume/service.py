@@ -131,12 +131,14 @@ class DumeArm:
 
     def jog(self, lin=(0, 0, 0), wrist_pitch=0.0, wrist_roll=0.0, gripper: float = 0.0, *, ticks: int = 1):
         """Apply a jog for ``ticks`` ticks: ``lin`` (normalised XYZ in [-1,1]) moves the wrist
-        pivot; ``wrist_pitch``/``wrist_roll`` jog the wrist joints; ``gripper`` opens/closes."""
+        pivot; ``wrist_pitch``/``wrist_roll`` jog the wrist joints; ``gripper`` (+open/-close) maps
+        to the triggers (interpreted per the controller's gripper mode)."""
         cmd = Command(
             lin=np.asarray(lin, float),
             wrist_pitch=float(wrist_pitch),
             wrist_roll=float(wrist_roll),
-            gripper=gripper,
+            lt=max(float(gripper), 0.0),
+            rt=max(-float(gripper), 0.0),
         )
         tel = None
         for _ in range(ticks):
@@ -144,13 +146,18 @@ class DumeArm:
         return tel
 
     def set_gripper(self, value_0_100: float, *, settle_ticks: int = 25):
-        """Drive the gripper toward an absolute 0..100 opening and let it settle."""
+        """Set the gripper to an absolute 0..100 opening directly (bypasses trigger interpretation)
+        and write it so the arm settles there."""
         target = float(np.clip(value_0_100, self.config.gripper_closed, self.config.gripper_open))
+        self.controller.gripper_cmd = target
+        if self.controller.q_ref is None:
+            self.controller._sync_to_joints(self.arm.read_joints())
         for _ in range(settle_ticks):
-            direction = np.sign(target - self.controller.gripper_cmd)
-            self.controller.step(Command(gripper=float(direction)))
-            if abs(self.controller.gripper_cmd - target) < 1.0:
-                break
+            q = self.controller.q_ref.copy()
+            q[5] = target
+            self.arm.write_joints(q)
+            if isinstance(self.arm, SO101Arm):
+                time.sleep(self.config.dt)
 
     def run_teleop(self, poll, on_tick=None) -> None:
         """Hand the loop to a Command source (e.g. the Xbox controller)."""

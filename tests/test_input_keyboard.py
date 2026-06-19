@@ -35,18 +35,17 @@ def test_arrows_map_to_wrist(monkeypatch):
 
 def test_gripper_hold_keys(monkeypatch):
     down = ik.p.KEY_IS_DOWN
-    assert _poll_with(monkeypatch, {ord("o"): down}).gripper == 1.0
-    assert _poll_with(monkeypatch, {ord("c"): down}).gripper == -1.0
+    assert _poll_with(monkeypatch, {ord("o"): down}).lt == 1.0  # open
+    assert _poll_with(monkeypatch, {ord("c"): down}).rt == 1.0  # close
 
 
-def test_tap_keys_mode_and_setpoints(monkeypatch):
+def test_tap_keys_mode_and_gripper_mode(monkeypatch):
     trig = ik.p.KEY_WAS_TRIGGERED
     assert _poll_with(monkeypatch, {ord("m"): trig}).toggle_mode is True
-    assert _poll_with(monkeypatch, {ord("["): trig}).gripper_close_set is True
-    assert _poll_with(monkeypatch, {ord("]"): trig}).gripper_open_set is True
+    assert _poll_with(monkeypatch, {ord("g"): trig}).gripper_mode_toggle is True
 
 
 def test_idle_is_zero(monkeypatch):
     cmd = _poll_with(monkeypatch, {})
-    assert np.allclose(cmd.lin, 0) and cmd.wrist_pitch == 0 and cmd.gripper == 0
-    assert cmd.toggle_mode is False
+    assert np.allclose(cmd.lin, 0) and cmd.wrist_pitch == 0 and cmd.lt == 0 and cmd.rt == 0
+    assert cmd.toggle_mode is False and cmd.gripper_mode_toggle is False

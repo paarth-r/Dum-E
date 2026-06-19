@@ -21,7 +21,7 @@ import numpy as np
 
 from dume import geometry as g
 from dume.arm import ArmIO
-from dume.config import ControllerConfig, ControlMode
+from dume.config import ControllerConfig, ControlMode, GripperMode
 from dume.input_xbox import Command
 from dume.kinematics import Kinematics
 from dume.planning import StraightLinePlanner, Trajectory
@@ -64,6 +64,7 @@ class Controller:
         )
         self.joint_limits = self.kin.joint_limits_deg()
         self.mode = ControlMode.VELOCITY
+        self.gripper_mode = self.config.gripper_mode_default
         self.orientation_lock = False
         self._filt_lin = np.zeros(3)
         self._traj: Trajectory | None = None
@@ -113,14 +114,22 @@ class Controller:
 
         self._handle_buttons(cmd, q_cur)
 
-        # Gripper integrates independently of mode.
-        self.gripper_cmd = float(
-            np.clip(
-                self.gripper_cmd + cmd.gripper * self.config.gripper_speed * dt,
-                self.config.gripper_closed,
-                self.config.gripper_open,
-            )
-        )
+        # Gripper, interpreted per gripper_mode (independent of the arm motion mode). Skipped
+        # during a scripted joint move (home / start / goto_joints), which commands its own
+        # gripper value and must not be fought by the triggers mid-move.
+        c = self.config
+        if self._joint_target is None:
+            if self.gripper_mode is GripperMode.SQUEEZE:
+                # RT position IS the openness: released -> open, fully depressed -> closed.
+                self.gripper_cmd = c.gripper_open - cmd.rt * (c.gripper_open - c.gripper_closed)
+            else:  # RATE: LT opens, RT closes, integrated.
+                self.gripper_cmd = float(
+                    np.clip(
+                        self.gripper_cmd + (cmd.lt - cmd.rt) * c.gripper_speed * dt,
+                        c.gripper_closed,
+                        c.gripper_open,
+                    )
+                )
 
         if self._joint_target is not None:
             # Joint-space move (Home): drive joints straight to the target, no IK, so it
@@ -152,12 +161,10 @@ class Controller:
             self.mode = ControlMode.POSE if self.mode is ControlMode.VELOCITY else ControlMode.VELOCITY
             self._traj = None
             self._sync_to_joints(q_cur)  # re-seat targets so neither mode lurches
-        # Gripper setpoints: snap fully open / closed. Applied here; the rate integration in
-        # step() then leaves it put (cmd.gripper is 0 unless a trigger is also held).
-        if cmd.gripper_open_set:
-            self.gripper_cmd = self.config.gripper_open
-        if cmd.gripper_close_set:
-            self.gripper_cmd = self.config.gripper_closed
+        if cmd.gripper_mode_toggle:
+            self.gripper_mode = (
+                GripperMode.RATE if self.gripper_mode is GripperMode.SQUEEZE else GripperMode.SQUEEZE
+            )
 
     def _advance_joint_move(self, q_cur: np.ndarray) -> np.ndarray:
         """Slew the 5 arm joints straight toward ``self._joint_target``; clear when arrived."""

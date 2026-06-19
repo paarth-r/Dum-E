@@ -19,6 +19,11 @@ class ControlMode(str, Enum):
     POSE = "pose"  # hold/track an absolute target pose (goto, presets)
 
 
+class GripperMode(str, Enum):
+    SQUEEZE = "squeeze"  # RT position IS the jaw openness (released = open, full = closed)
+    RATE = "rate"  # LT opens / RT closes, integrated over time (legacy feel)
+
+
 @dataclass
 class AxisBox:
     """An axis-aligned workspace box in the base frame (metres)."""
@@ -54,9 +59,14 @@ class XboxMap:
     axis_lt: int = 4  # left trigger
     axis_rt: int = 5  # right trigger
 
-    btn_a: int = 0  # gripper -> full close (setpoint)
+    btn_a: int = 0  # (free)
     btn_b: int = 1  # toggle velocity/pose (freeze) mode
-    btn_y: int = 3  # gripper -> full open (setpoint)
+    btn_x: int = 2  # toggle gripper mode (squeeze <-> rate)
+    btn_y: int = 3  # (free)
+
+    # Stick clicks (L3/R3): nudge Z up/down. SDL indices vary by driver — verify with `dume axes`.
+    btn_l3: int = 7  # left-stick click -> Z up
+    btn_r3: int = 8  # right-stick click -> Z down
 
     # D-pad (held): pitch = wrist_flex, roll = wrist_roll. SDL Xbox layout = buttons 11-14.
     btn_dpad_up: int = 11  # pitch up
@@ -106,7 +116,8 @@ class ControllerConfig:
     # Gripper (the gripper motor is normalised 0..100, not degrees)
     gripper_open: float = 95.0
     gripper_closed: float = 5.0
-    gripper_speed: float = 200.0  # units/s (0..100 scale) at full trigger
+    gripper_speed: float = 200.0  # units/s (0..100 scale) at full trigger, RATE mode
+    gripper_mode_default: GripperMode = GripperMode.SQUEEZE  # X toggles to RATE
 
     # Planner (goto / pose moves)
     plan_max_linear_vel: float = 0.10  # m/s

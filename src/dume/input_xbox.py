@@ -5,14 +5,14 @@ the controller. Buttons are edge-triggered (a flag is True only on the press tha
 so one push = one action.
 
 Semantic mapping (the only bindings):
-- Left stick    -> base-plane translation (up = +X forward, left/right = +/-Y)
-- Right stick Y -> Z (up = +Z)
-- D-pad up/down -> wrist pitch (wrist_flex), while held
-- D-pad left/right -> wrist roll (wrist_roll), while held
-- LT / RT       -> gripper open / close (proportional)
-- A             -> gripper full close (setpoint, one press)
-- Y             -> gripper full open (setpoint, one press)
-- B             -> toggle velocity / pose (freeze) mode
+- Left stick      -> base-plane translation (up = +X forward, left/right = +/-Y)
+- Right stick Y   -> Z (up = +Z)
+- L3 / R3 click   -> Z up / Z down (summed with right-stick Y)
+- D-pad up/down   -> wrist pitch (wrist_flex), while held
+- D-pad left/right-> wrist roll (wrist_roll), while held
+- RT (+ LT)       -> gripper (SQUEEZE: rt = openness; RATE: lt opens, rt closes)
+- X               -> toggle gripper mode (squeeze <-> rate)
+- B               -> toggle velocity / pose (freeze) mode
 """
 
 from __future__ import annotations
@@ -26,15 +26,20 @@ from dume.config import XboxMap
 
 @dataclass
 class Command:
-    """One control sample. Stick axes are shaped, normalised to [-1, 1]; wrist is -1/0/+1."""
+    """One control sample. Stick axes are shaped, normalised to [-1, 1]; wrist is -1/0/+1.
+
+    Triggers are reported as absolute positions (``lt``/``rt`` in [0, 1]); the controller
+    interprets them per its gripper mode (SQUEEZE = rt is absolute openness; RATE = lt opens,
+    rt closes, integrated). This keeps the input layer ignorant of the mode.
+    """
 
     lin: np.ndarray = field(default_factory=lambda: np.zeros(3))  # x, y, z
     wrist_pitch: float = 0.0  # signed wrist_flex jog (D-pad down = +, up = -)
     wrist_roll: float = 0.0  # signed wrist_roll jog (D-pad left = +, right = -)
-    gripper: float = 0.0  # + open, - close
-    toggle_mode: bool = False
-    gripper_open_set: bool = False  # snap gripper fully open (one press)
-    gripper_close_set: bool = False  # snap gripper fully closed (one press)
+    lt: float = 0.0  # left trigger position [0, 1]
+    rt: float = 0.0  # right trigger position [0, 1]
+    toggle_mode: bool = False  # B: velocity <-> freeze
+    gripper_mode_toggle: bool = False  # X: squeeze <-> rate
 
 
 def apply_deadzone(v: float, dz: float) -> float:
@@ -50,6 +55,13 @@ def apply_expo(v: float, expo: float) -> float:
 
 def shape_axis(v: float, dz: float, expo: float) -> float:
     return apply_expo(apply_deadzone(v, dz), expo)
+
+
+def combine_z(stick_z: float, l3: bool, r3: bool) -> float:
+    """Z velocity = right-stick Y (already shaped, +up) plus stick clicks (L3 up, R3 down),
+    clamped to [-1, 1]."""
+    click = (1.0 if l3 else 0.0) - (1.0 if r3 else 0.0)
+    return float(np.clip(stick_z + click, -1.0, 1.0))
 
 
 class XboxController:
@@ -114,11 +126,17 @@ class XboxController:
         m = self.map
         dz, ex = m.deadzone, m.expo
 
+        # Z = right-stick Y (analog) summed with the stick clicks (L3 up, R3 down), clamped.
+        z = combine_z(
+            -shape_axis(self._axis(m.axis_right_y), dz, ex),
+            self._button(m.btn_l3),
+            self._button(m.btn_r3),
+        )
         lin = np.array(
             [
                 -shape_axis(self._axis(m.axis_left_y), dz, ex),  # up = +X forward
                 -shape_axis(self._axis(m.axis_left_x), dz, ex),  # left = +Y
-                -shape_axis(self._axis(m.axis_right_y), dz, ex),  # up = +Z
+                z,
             ]
         )
         # D-pad held (continuous), not edge-triggered. Signs match observed arm direction.
@@ -128,16 +146,15 @@ class XboxController:
         wrist_roll = (1.0 if self._button(m.btn_dpad_left) else 0.0) - (
             1.0 if self._button(m.btn_dpad_right) else 0.0
         )
-        gripper = self._trigger(m.axis_lt) - self._trigger(m.axis_rt)  # LT open, RT close
 
         return Command(
             lin=lin,
             wrist_pitch=wrist_pitch,
             wrist_roll=wrist_roll,
-            gripper=gripper,
+            lt=self._trigger(m.axis_lt),
+            rt=self._trigger(m.axis_rt),
             toggle_mode=self._rising(m.btn_b),
-            gripper_open_set=self._rising(m.btn_y),
-            gripper_close_set=self._rising(m.btn_a),
+            gripper_mode_toggle=self._rising(m.btn_x),
         )
 
     def disconnect(self) -> None:

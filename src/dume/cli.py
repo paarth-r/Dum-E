@@ -64,9 +64,10 @@ def cmd_axes(args) -> int:
         while True:
             pygame.event.pump()
             buttons = {
-                "A:close": xb._button(m.btn_a),
-                "Y:open": xb._button(m.btn_y),
+                "X:gmode": xb._button(m.btn_x),
                 "B:mode": xb._button(m.btn_b),
+                "L3:Zup": xb._button(m.btn_l3),
+                "R3:Zdn": xb._button(m.btn_r3),
                 "D-Up": xb._button(m.btn_dpad_up),
                 "D-Down": xb._button(m.btn_dpad_down),
                 "D-Left": xb._button(m.btn_dpad_left),
@@ -173,8 +174,8 @@ def cmd_run(args) -> int:
         xb.connect()
         print(f"Controller: {xb.name}")
         print(
-            "Left stick: X/Y  |  Right stick: Z  |  D-pad up/down: pitch  |  D-pad L/R: roll\n"
-            "LT: open  RT: close  |  A: full close  Y: full open  |  B: velocity/freeze mode  |  Ctrl-C: quit"
+            "Left stick: X/Y  |  Right stick: Z (L3 up / R3 down)  |  D-pad: pitch (U/D), roll (L/R)\n"
+            "RT: gripper (squeeze)  |  X: gripper mode (squeeze/rate)  |  B: velocity/freeze  |  Ctrl-C: quit"
         )
         try:
             arm.run_teleop(xb.poll, on_tick=_status_printer())

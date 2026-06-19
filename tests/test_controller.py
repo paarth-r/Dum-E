@@ -31,11 +31,14 @@ def controller(kin, tmp_path):
     return ctl
 
 
-def test_zero_command_holds_still(controller):
+def test_zero_command_holds_arm_still(controller):
+    # The 5 arm joints must not drift on a zero command. (In SQUEEZE mode a released trigger
+    # means "fully open", so the gripper settling open is expected and checked separately.)
     start = controller.arm.read_joints().copy()
     for _ in range(20):
         controller.step(Command())
-    assert np.allclose(controller.arm.read_joints(), start, atol=1e-6)
+    assert np.allclose(controller.arm.read_joints()[:5], start[:5], atol=1e-6)
+    assert controller.gripper_cmd == pytest.approx(controller.config.gripper_open)
 
 
 def test_velocity_jog_moves_forward_in_x(controller):
@@ -105,22 +108,28 @@ def test_home_returns_to_start_config(controller):
     assert np.max(np.abs(controller.arm.read_joints()[:5] - start[:5])) < 0.6
 
 
-def test_gripper_opens_and_closes(controller):
+def test_gripper_squeeze_is_absolute(controller):
+    """SQUEEZE (default): RT position maps directly to jaw openness, no integration."""
     cfg = controller.config
-    for _ in range(80):
-        controller.step(Command(gripper=1.0))  # open
-    assert controller.gripper_cmd >= cfg.gripper_open - 1.0
+    controller.step(Command(rt=0.0))  # released -> fully open
+    assert controller.gripper_cmd == pytest.approx(cfg.gripper_open)
+    controller.step(Command(rt=1.0))  # fully depressed -> fully closed
+    assert controller.gripper_cmd == pytest.approx(cfg.gripper_closed)
+    controller.step(Command(rt=0.5))  # half -> midpoint, in one tick (absolute)
+    assert controller.gripper_cmd == pytest.approx((cfg.gripper_open + cfg.gripper_closed) / 2)
+
+
+def test_gripper_mode_toggle_switches_to_rate(controller):
+    """X toggles to RATE: LT opens / RT closes, integrated over time."""
+    cfg = controller.config
+    controller.step(Command(gripper_mode_toggle=True))  # X -> RATE
+    controller.gripper_cmd = (cfg.gripper_open + cfg.gripper_closed) / 2
     for _ in range(120):
-        controller.step(Command(gripper=-1.0))  # close
+        controller.step(Command(rt=1.0))  # close, integrated
     assert controller.gripper_cmd <= cfg.gripper_closed + 1.0
-
-
-def test_gripper_setpoints_snap_open_and_closed(controller):
-    cfg = controller.config
-    controller.step(Command(gripper_close_set=True))  # A -> full close, one press
-    assert controller.gripper_cmd == cfg.gripper_closed
-    controller.step(Command(gripper_open_set=True))  # Y -> full open, one press
-    assert controller.gripper_cmd == cfg.gripper_open
+    for _ in range(120):
+        controller.step(Command(lt=1.0))  # open, integrated
+    assert controller.gripper_cmd >= cfg.gripper_open - 1.0
 
 
 def test_goto_reaches_pose(controller):

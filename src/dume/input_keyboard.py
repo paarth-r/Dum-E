@@ -11,8 +11,8 @@ Keymap::
     R / F      move +Z / -Z        (up / down)
     Up / Down  wrist pitch         (wrist_flex)
     Left/Right wrist roll          (wrist_roll)
-    O / C      gripper open / close (hold)
-    [ / ]      snap gripper closed / open (tap)
+    O / C      gripper open / close (lt/rt; in SQUEEZE, hold C = closed, release = open)
+    G          toggle gripper mode (squeeze / rate) (tap)
     M          toggle velocity / freeze mode (tap)
 """
 
@@ -61,14 +61,17 @@ class KeyboardController:
         wrist_pitch = (1.0 if down(p.B3G_DOWN_ARROW) else 0.0) - (1.0 if down(p.B3G_UP_ARROW) else 0.0)
         wrist_roll = (1.0 if down(p.B3G_LEFT_ARROW) else 0.0) - (1.0 if down(p.B3G_RIGHT_ARROW) else 0.0)
 
-        gripper = (1.0 if down(ord("o")) else 0.0) - (1.0 if down(ord("c")) else 0.0)
+        # Triggers as absolute positions: O = open (lt), C = close (rt). Works in both gripper
+        # modes (SQUEEZE: rt is absolute, so hold C = closed, release = open; RATE: integrated).
+        lt = 1.0 if down(ord("o")) else 0.0
+        rt = 1.0 if down(ord("c")) else 0.0
 
         return Command(
             lin=lin,
             wrist_pitch=wrist_pitch,
             wrist_roll=wrist_roll,
-            gripper=gripper,
+            lt=lt,
+            rt=rt,
             toggle_mode=tapped(ord("m")),
-            gripper_close_set=tapped(ord("[")),
-            gripper_open_set=tapped(ord("]")),
+            gripper_mode_toggle=tapped(ord("g")),
         )

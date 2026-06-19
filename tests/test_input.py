@@ -1,6 +1,6 @@
 import numpy as np
 
-from dume.input_xbox import apply_deadzone, apply_expo, shape_axis
+from dume.input_xbox import apply_deadzone, apply_expo, combine_z, shape_axis
 
 
 def test_deadzone_zeros_small():
@@ -30,3 +30,11 @@ def test_shape_axis_monotonic():
     xs = np.linspace(-1, 1, 50)
     ys = [shape_axis(x, 0.08, 0.6) for x in xs]
     assert all(b >= a - 1e-9 for a, b in zip(ys, ys[1:]))
+
+
+def test_combine_z_stick_and_clicks():
+    assert combine_z(0.0, True, False) == 1.0  # L3 -> up
+    assert combine_z(0.0, False, True) == -1.0  # R3 -> down
+    assert combine_z(0.5, False, False) == 0.5  # stick only
+    assert combine_z(0.8, True, False) == 1.0  # stick + click, clamped
+    assert combine_z(0.0, True, True) == 0.0  # both clicks cancel
