@@ -72,20 +72,23 @@ position joint (pan/lift/elbow) saturates, `_pivot_target` keeps marching past t
 envelope, so it decouples from where the arm actually is. Reversing the stick then only chips away at
 that accumulated overshoot before the arm visibly moves — the "lock."
 
-**Fix — back-project the target onto the achieved configuration.** At the end of `_velocity_jog`,
-after clipping `q_send`, set `self._pivot_target = self.kin_pos.fk(q_send[:3])[:3, 3]`. The target can
-then never lead the arm past its reachable envelope: when elbow_flex hits its limit, the target stops
-at that boundary, and a reversing command moves inward on the very next tick. This is anti-windup by
-back-projection — standard, deterministic, and it makes the arm "aware of its own physical limits"
-because the commanded target is always a configuration the joints can actually hold.
+**Fix — leash the target to the achieved configuration.** (Pure back-projection — collapsing
+`_pivot_target` onto `fk(q_send[:3])` every tick — was tried first but killed the integrator near
+singularities, giving glacial motion.) Instead, after integrating the target, clamp it to within
+`config.pivot_leash_m` (10 mm) of the achieved pivot `fk(ref[:3])`. The target can then never lead
+reality by more than the leash, so when a position joint saturates the target stops ~10 mm past the
+boundary and reversing unwinds it almost instantly — while well-conditioned motion is unaffected
+(there the achieved pivot tracks the target, so the leash never binds). Verified in sim: windup
+125 mm → 10 mm; reverse-to-5 mm 52 ticks → 15 (now bounded by the intended EMA smoothing, not a
+lockout).
 
 Wrist joints (wrist_flex / wrist_roll) already integrate-then-clamp each tick, so they don't wind up;
 no change needed there.
 
-**Self-awareness readout.** Surface, per tick (reusing `awareness.py` where possible), in telemetry
-and the live `dume run` status line:
+**Self-awareness readout.** Surface, per tick (computed inline — there is no `awareness.py` in this
+repo), in telemetry and the live `dume run` status line:
 - minimum joint-limit margin (deg) across the arm joints, and which joint,
-- a near-singular flag when manipulability drops below a threshold.
+- a near-singular flag when `Kinematics.manipulability` drops below `config.manipulability_floor`.
 
 This is reporting only — the back-projection is what prevents the lockout. (Optional, not required
 for this iteration: scale commanded velocity down as manipulability falls. The existing DLS damping
