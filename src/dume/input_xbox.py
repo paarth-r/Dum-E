@@ -9,8 +9,10 @@ Semantic mapping (the only bindings):
 - Right stick Y -> Z (up = +Z)
 - D-pad up/down -> wrist pitch (wrist_flex), while held
 - D-pad left/right -> wrist roll (wrist_roll), while held
-- LT / RT       -> gripper close / open (proportional)
-- A             -> toggle velocity / pose (freeze) mode
+- LT / RT       -> gripper open / close (proportional)
+- A             -> gripper full close (setpoint, one press)
+- Y             -> gripper full open (setpoint, one press)
+- B             -> toggle velocity / pose (freeze) mode
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ class Command:
     wrist_roll: float = 0.0  # signed wrist_roll jog (D-pad left = +, right = -)
     gripper: float = 0.0  # + open, - close
     toggle_mode: bool = False
+    gripper_open_set: bool = False  # snap gripper fully open (one press)
+    gripper_close_set: bool = False  # snap gripper fully closed (one press)
 
 
 def apply_deadzone(v: float, dz: float) -> float:
@@ -124,14 +128,16 @@ class XboxController:
         wrist_roll = (1.0 if self._button(m.btn_dpad_left) else 0.0) - (
             1.0 if self._button(m.btn_dpad_right) else 0.0
         )
-        gripper = self._trigger(m.axis_rt) - self._trigger(m.axis_lt)  # + open, - close
+        gripper = self._trigger(m.axis_lt) - self._trigger(m.axis_rt)  # LT open, RT close
 
         return Command(
             lin=lin,
             wrist_pitch=wrist_pitch,
             wrist_roll=wrist_roll,
             gripper=gripper,
-            toggle_mode=self._rising(m.btn_a),
+            toggle_mode=self._rising(m.btn_b),
+            gripper_open_set=self._rising(m.btn_y),
+            gripper_close_set=self._rising(m.btn_a),
         )
 
     def disconnect(self) -> None:

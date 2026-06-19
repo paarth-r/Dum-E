@@ -115,6 +115,14 @@ def test_gripper_opens_and_closes(controller):
     assert controller.gripper_cmd <= cfg.gripper_closed + 1.0
 
 
+def test_gripper_setpoints_snap_open_and_closed(controller):
+    cfg = controller.config
+    controller.step(Command(gripper_close_set=True))  # A -> full close, one press
+    assert controller.gripper_cmd == cfg.gripper_closed
+    controller.step(Command(gripper_open_set=True))  # Y -> full open, one press
+    assert controller.gripper_cmd == cfg.gripper_open
+
+
 def test_goto_reaches_pose(controller):
     target = controller.kin.fk(np.array([20.0, -25.0, 30.0, 10.0, -15.0, 50.0]))
     controller._goto_pose(target, controller.arm.read_joints())

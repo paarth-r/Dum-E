@@ -112,6 +112,23 @@ class DumeArm:
                     time.sleep(self.config.dt)
         return self.get_pose()
 
+    def goto_joints(self, joints, *, wait: bool = True, timeout: float = 15.0):
+        """Joint-space move to an exact configuration (length-6, in ``arm.MOTOR_ORDER``).
+
+        Straight-line in joint space (no IK), so it reproduces a captured pose exactly. The
+        sixth element drives the gripper. Used to send the arm to its saved start pose.
+        """
+        target = np.asarray(joints, dtype=float)
+        self.controller.gripper_cmd = float(target[5])
+        self.controller._joint_target = target.copy()
+        if wait:
+            deadline = time.perf_counter() + timeout
+            while self.controller._joint_target is not None and time.perf_counter() < deadline:
+                self.controller.step(Command())
+                if isinstance(self.arm, SO101Arm):
+                    time.sleep(self.config.dt)
+        return self.get_pose()
+
     def jog(self, lin=(0, 0, 0), wrist_pitch=0.0, wrist_roll=0.0, gripper: float = 0.0, *, ticks: int = 1):
         """Apply a jog for ``ticks`` ticks: ``lin`` (normalised XYZ in [-1,1]) moves the wrist
         pivot; ``wrist_pitch``/``wrist_roll`` jog the wrist joints; ``gripper`` opens/closes."""
