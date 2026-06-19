@@ -12,9 +12,44 @@ The first five are degrees; the sixth (gripper) is normalised 0..100.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+import glob
+import os
+from typing import Callable, Protocol, runtime_checkable
 
 import numpy as np
+
+# macOS exposes the SO-101's USB-serial bridge as /dev/cu.usbmodem<serial>. The trailing serial
+# can change across reflashes/ports, so we glob rather than hard-code the suffix.
+USBMODEM_GLOB = "/dev/cu.usbmodem*"
+
+
+def resolve_serial_port(
+    preferred: str,
+    *,
+    exists: Callable[[str], bool] = os.path.exists,
+    candidates: Callable[[], list[str]] | None = None,
+) -> str:
+    """Return a usable serial port, so ``dume run`` works without hand-editing the config.
+
+    If ``preferred`` is present, use it verbatim. Otherwise glob ``/dev/cu.usbmodem*``: a single
+    match is used automatically; zero or several raise a helpful error rather than guessing.
+    ``exists``/``candidates`` are injectable for testing.
+    """
+    if exists(preferred):
+        return preferred
+    found = sorted(candidates() if candidates is not None else glob.glob(USBMODEM_GLOB))
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        raise RuntimeError(
+            f"Serial port {preferred!r} not found and no {USBMODEM_GLOB} device is connected. "
+            "Plug in the arm, or run `dume find-port`."
+        )
+    raise RuntimeError(
+        f"Serial port {preferred!r} not found and multiple candidates exist: {found}. "
+        "Pass the right one with --port."
+    )
+
 
 MOTOR_ORDER = [
     "shoulder_pan",
@@ -53,6 +88,8 @@ class SO101Arm:
         from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
         from lerobot.robots.so_follower.so_follower import SOFollower
 
+        # Auto-resolve so a changed usbmodem suffix doesn't require editing the config.
+        self.port = resolve_serial_port(self.port)
         cfg = SOFollowerRobotConfig(
             port=self.port,
             id=self.robot_id,
