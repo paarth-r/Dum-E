@@ -125,11 +125,11 @@ class ControllerConfig:
     gripper_closed: float = 5.0
     gripper_speed: float = 200.0  # units/s (0..100 scale) at full trigger, RATE mode
     gripper_mode_default: GripperMode = GripperMode.SQUEEZE  # X toggles to RATE
-    # STS3215 position-loop P gain for the gripper motor, applied on connect (overrides lerobot's
-    # default of 16, which it lowers from the firmware default 32 to avoid arm-joint shakiness).
-    # Higher = the gripper tracks the trigger faster/tighter. Raise (48/64) for snappier; None
-    # leaves lerobot's value. Gripper only — the arm joints keep lerobot's gentler P.
-    gripper_servo_p: int | None = 32
+    # STS3215 position-loop P gain for the gripper motor, applied on connect. lerobot sets every
+    # motor to 16 (down from firmware default 32) "to avoid shakiness" — raising it made the
+    # gripper buzz and shook the whole arm, so we leave it (None). Speed up the gripper via its
+    # velocity limit instead, not P. Gripper only if set.
+    gripper_servo_p: int | None = None
 
     # Planner (goto / pose moves)
     plan_max_linear_vel: float = 0.10  # m/s
