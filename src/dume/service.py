@@ -39,7 +39,11 @@ class DumeArm:
         elif dry_run:
             self.arm = SimArm(initial_joints=HOME_JOINTS)
         else:
-            self.arm = SO101Arm(self.config.port, self.config.robot_id)
+            self.arm = SO101Arm(
+                self.config.port,
+                self.config.robot_id,
+                gripper_servo_p=self.config.gripper_servo_p,
+            )
         self.controller = Controller(
             self.config, self.arm, self.kin, poses or PoseStore()
         )

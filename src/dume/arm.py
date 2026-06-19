@@ -78,10 +78,18 @@ class SO101Arm:
 
     name = "so101"
 
-    def __init__(self, port: str, robot_id: str, *, disable_torque_on_disconnect: bool = True):
+    def __init__(
+        self,
+        port: str,
+        robot_id: str,
+        *,
+        disable_torque_on_disconnect: bool = True,
+        gripper_servo_p: int | None = None,
+    ):
         self.port = port
         self.robot_id = robot_id
         self._disable_torque = disable_torque_on_disconnect
+        self._gripper_servo_p = gripper_servo_p
         self._robot = None
 
     def connect(self) -> None:
@@ -100,6 +108,10 @@ class SO101Arm:
         # calibrate=False: never silently launch the interactive calibration routine;
         # we check is_calibrated() explicitly and tell the user to run `dume calibrate`.
         self._robot.connect(calibrate=False)
+        # Bump the gripper's position-loop P after lerobot's configure() (which sets all motors to
+        # 16) so the gripper tracks the trigger snappily. Gripper only; arm joints stay gentle.
+        if self._gripper_servo_p is not None:
+            self._robot.bus.write("P_Coefficient", "gripper", int(self._gripper_servo_p))
 
     def disconnect(self) -> None:
         if self._robot is not None:
