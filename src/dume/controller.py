@@ -169,7 +169,9 @@ class Controller:
         q_send[5] = self.gripper_cmd
         if np.max(np.abs(target[:5] - q_send[:5])) < 0.5:  # arrived (deg)
             self._joint_target = None
-            self.target_pose = self.kin.fk(q_send)  # resync so velocity jog resumes cleanly
+            # Re-seat ALL velocity-jog state (pivot/wrist/filters), not just target_pose, or the
+            # next zero-command tick would jog back toward the pre-move pose's stale pivot target.
+            self._sync_to_joints(q_send)
         return q_send
 
     def _goto_pose(

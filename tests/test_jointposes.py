@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from dume.arm import MOTOR_ORDER, SimArm
+from dume.input_xbox import Command
 from dume.poses import HOME_JOINTS, JointPoseStore
 from dume.service import DumeArm
 
@@ -77,6 +78,19 @@ def test_run_start_pose_wiring(tmp_path):
 
     assert np.allclose(reached[:5], start[:5], atol=0.5)  # arm joints exact
     assert np.allclose(arm.controller.home_joints, start)  # home now points at start
+
+
+def test_start_pose_holds_when_velocity_jog_resumes():
+    """Regression: after a joint move (start pose / home), idle velocity-jog must NOT drift
+    back to the pre-move config. The bug was stale velocity-jog state (_pivot_target etc.)
+    left pointing at the startup pose, so the first zero-command tick dragged the arm back."""
+    start = np.array([25.0, -10.0, 15.0, 18.0, 5.0, 30.0])
+    with DumeArm(dry_run=True) as arm:  # SimArm boots at HOME_JOINTS (the "curled" pose)
+        arm.goto_joints(start, wait=True)
+        for _ in range(100):  # simulate teleop idle ticks (VELOCITY mode, no input)
+            arm.controller.step(Command())
+        held = arm.get_joints()
+    assert np.allclose(held[:5], start[:5], atol=1.0), held
 
 
 def test_sim_relax_is_noop():
