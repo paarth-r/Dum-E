@@ -108,9 +108,11 @@ def _status_printer(every: int = 5):
         x, y, z = tel.target_xyzrpy[:3]
         lock = "LOCK" if tel.orientation_lock else "free"
         traj = "traj" if tel.trajectory_active else "hold"
+        sing = " SINGULAR" if tel.near_singular else ""
         print(
             f"[{tel.mode.value:8}] target xyz=({x:+.3f},{y:+.3f},{z:+.3f}) "
-            f"grip={tel.gripper:5.1f} ori={lock} {traj} err={tel.tracking_pos_err_mm:5.1f}mm   ",
+            f"grip={tel.gripper:5.1f} ori={lock} {traj} err={tel.tracking_pos_err_mm:5.1f}mm "
+            f"margin={tel.min_joint_margin_deg:4.0f}° ({tel.margin_joint}){sing}   ",
             end="\r",
             flush=True,
         )

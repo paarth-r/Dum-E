@@ -129,6 +129,16 @@ def test_home_returns_to_start_config(controller):
     assert np.max(np.abs(controller.arm.read_joints()[:5] - start[:5])) < 0.6
 
 
+def test_telemetry_reports_awareness(controller):
+    """Telemetry surfaces joint-limit margin + a near-singular flag (self-awareness readout)."""
+    tel = controller.step(Command())  # at HOME: well conditioned, off the limits
+    assert tel.near_singular is False
+    assert tel.min_joint_margin_deg > 5.0
+    for _ in range(400):  # drive to full extension (reachable boundary = near-singular)
+        tel = controller.step(Command(lin=np.array([1.0, 0.0, 0.0])))
+    assert tel.near_singular is True
+
+
 def test_gripper_squeeze_is_absolute(controller):
     """SQUEEZE (default): RT position maps directly to jaw openness, no integration."""
     cfg = controller.config

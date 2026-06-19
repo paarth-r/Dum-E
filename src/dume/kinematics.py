@@ -102,6 +102,23 @@ class Kinematics:
         """Forward kinematics: joint angles (deg) -> 4x4 end-effector pose."""
         return np.asarray(self._kin.forward_kinematics(np.asarray(joints_deg, dtype=float)))
 
+    def manipulability(self, joints_deg) -> float:
+        """Yoshikawa position manipulability ``sqrt(det(J Jᵀ))`` at ``joints_deg``.
+
+        ``J`` is the 3×n position Jacobian (finite-differenced). Near 0 means the arm is near a
+        positional singularity (fully extended/folded) where motion gets ill-conditioned.
+        """
+        q = np.asarray(joints_deg, dtype=float)
+        base = self.fk(q)[:3, 3]
+        n = len(q)
+        J = np.empty((3, n))
+        step = 0.5
+        for i in range(n):
+            dq = np.zeros(n)
+            dq[i] = step
+            J[:, i] = (self.fk(q + dq)[:3, 3] - base) / np.deg2rad(step)
+        return float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))
+
     def ik(
         self,
         current_joints_deg,

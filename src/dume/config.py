@@ -109,6 +109,9 @@ class ControllerConfig:
     # this distance (metres). Bounds windup when a joint saturates so reversing is near-instant;
     # large enough not to throttle well-conditioned motion (where achieved tracks the target).
     pivot_leash_m: float = 0.01
+    # Below this position-manipulability the arm reports "near singular" in telemetry (readout
+    # only; the DLS damping + leash already keep motion safe there). HOME ~= 0.0024, singular -> 0.
+    manipulability_floor: float = 0.0008
 
     # IK weights. The SO-101 is a 5-DOF arm, so it cannot satisfy an arbitrary 6-DOF pose;
     # control is position-led with best-effort orientation.

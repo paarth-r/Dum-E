@@ -37,6 +37,9 @@ class Telemetry:
     orientation_lock: bool
     tracking_pos_err_mm: float
     trajectory_active: bool
+    min_joint_margin_deg: float  # smallest distance from any arm joint to its limit
+    margin_joint: str  # which joint owns that margin
+    near_singular: bool  # position manipulability below the configured floor
 
 
 @dataclass
@@ -145,6 +148,11 @@ class Controller:
 
         achieved = self.kin.fk(q_send)
         err_mm = float(np.linalg.norm(g.position_of(achieved) - g.position_of(self.target_pose)) * 1000)
+        margins = np.minimum(
+            q_send[:5] - self.joint_limits[:5, 0], self.joint_limits[:5, 1] - q_send[:5]
+        )
+        j = int(np.argmin(margins))
+        manip = self.kin_pos.manipulability(q_send[:3])
         return Telemetry(
             mode=self.mode,
             target_xyzrpy=g.pose_to_xyzrpy(self.target_pose),
@@ -153,6 +161,9 @@ class Controller:
             orientation_lock=self.orientation_lock,
             tracking_pos_err_mm=err_mm,
             trajectory_active=self._traj is not None or self._joint_target is not None,
+            min_joint_margin_deg=float(margins[j]),
+            margin_joint=self.kin.joint_names[j],
+            near_singular=manip < self.config.manipulability_floor,
         )
 
     # ---- pieces ------------------------------------------------------------
