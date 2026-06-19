@@ -105,6 +105,10 @@ class ControllerConfig:
     # the general placo solver, with explicit singularity damping). Higher damping = steadier
     # near singularities, slower tracking.
     dls_damping: float = 0.05
+    # Anti-lockout leash: the integrated wrist-pivot target may lead the achieved pivot by at most
+    # this distance (metres). Bounds windup when a joint saturates so reversing is near-instant;
+    # large enough not to throttle well-conditioned motion (where achieved tracks the target).
+    pivot_leash_m: float = 0.01
 
     # IK weights. The SO-101 is a 5-DOF arm, so it cannot satisfy an arbitrary 6-DOF pose;
     # control is position-led with best-effort orientation.

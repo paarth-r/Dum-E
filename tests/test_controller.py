@@ -60,6 +60,27 @@ def test_joint_steps_are_bounded(controller):
         prev = now.copy()
 
 
+def test_no_lockout_when_joint_saturates(controller):
+    """Driving into the arm's reach limit must not wind the pivot target far past reach (the
+    elbow_flex lockout). The leash bounds windup so reversing responds promptly instead of
+    having to unwind a large overshoot first."""
+    for _ in range(400):  # push +X to the reachable boundary (elbow_flex near full ROM)
+        controller.step(Command(lin=np.array([1.0, 0.0, 0.0])))
+    q_sat = controller.arm.read_joints().copy()
+    achieved = controller.kin_pos.fk(q_sat[:3])[:3, 3]
+    # Windup bounded by the leash (was ~125 mm before the fix -> ~1 s of dead reversal).
+    assert np.linalg.norm(controller._pivot_target - achieved) < controller.config.pivot_leash_m + 5e-3
+    # Reversing retreats the end-effector promptly (leashed ~15 ticks; un-leashed was ~52).
+    x0 = controller.kin.fk(q_sat)[0, 3]
+    moved_at = None
+    for i in range(25):
+        controller.step(Command(lin=np.array([-1.0, 0.0, 0.0])))
+        if x0 - controller.kin.fk(controller.arm.read_joints())[0, 3] > 5e-3:
+            moved_at = i + 1
+            break
+    assert moved_at is not None  # the arm came back -> no lockout
+
+
 def test_target_stays_in_workspace(controller):
     cfg = controller.config
     for _ in range(300):  # push hard toward +X +Y +Z for a long time

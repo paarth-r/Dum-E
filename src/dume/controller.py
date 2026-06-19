@@ -203,11 +203,18 @@ class Controller:
         wrist joints directly. Fully decoupled, so pitch/roll never fight position."""
         c = self.config
         ref = self.q_ref  # slew/seed from the commanded reference, never the noisy measurement
-        # Wrist pivot position: EMA-smoothed velocity integrated into the target, clamped.
+        # Wrist pivot position: EMA-smoothed velocity integrated into the target, clamped to the
+        # workspace, then leashed to the achieved pivot so it can't wind up far past reach.
         desired_lin = cmd.lin * c.max_linear_vel
         a = c.vel_ema_alpha
         self._filt_lin = a * desired_lin + (1 - a) * self._filt_lin
-        self._pivot_target = c.workspace.clamp(self._pivot_target + self._filt_lin * dt)
+        candidate = c.workspace.clamp(self._pivot_target + self._filt_lin * dt)
+        achieved_pivot = self.kin_pos.fk(ref[:3])[:3, 3]  # where the arm actually is now
+        lead = candidate - achieved_pivot
+        dist = float(np.linalg.norm(lead))
+        if dist > c.pivot_leash_m:  # anti-lockout: bound how far the target leads reality
+            candidate = achieved_pivot + lead * (c.pivot_leash_m / dist)
+        self._pivot_target = candidate
         # Damped least-squares position IK over pan/lift/elbow, seeded from the reference.
         q_pos = self.kin_pos.ik_position_dls(ref[:3], self._pivot_target, damping=c.dls_damping)
 
