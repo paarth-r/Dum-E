@@ -99,9 +99,16 @@ def cmd_axes(args) -> int:
 
 
 def _status_printer(every: int = 5):
-    state = {"i": 0}
+    state = {"i": 0, "t": None, "hz": 0.0}
 
     def on_tick(tel):
+        # Effective loop rate (EMA-smoothed) — if this sits well below 50 Hz, stepped motion is a
+        # timing/serial-latency problem, not the control pipeline.
+        now = time.perf_counter()
+        if state["t"] is not None:
+            inst = 1.0 / max(now - state["t"], 1e-6)
+            state["hz"] = inst if state["hz"] == 0 else 0.9 * state["hz"] + 0.1 * inst
+        state["t"] = now
         state["i"] += 1
         if state["i"] % every:
             return
@@ -110,9 +117,9 @@ def _status_printer(every: int = 5):
         traj = "traj" if tel.trajectory_active else "hold"
         sing = " SINGULAR" if tel.near_singular else ""
         print(
-            f"[{tel.mode.value:8}] target xyz=({x:+.3f},{y:+.3f},{z:+.3f}) "
-            f"grip={tel.gripper:5.1f} ori={lock} {traj} err={tel.tracking_pos_err_mm:5.1f}mm "
-            f"margin={tel.min_joint_margin_deg:4.0f}° ({tel.margin_joint}){sing}   ",
+            f"[{tel.mode.value:8}] xyz=({x:+.3f},{y:+.3f},{z:+.3f}) "
+            f"grip={tel.gripper:5.1f} {traj} err={tel.tracking_pos_err_mm:4.0f}mm "
+            f"margin={tel.min_joint_margin_deg:4.0f}°({tel.margin_joint}) {state['hz']:4.0f}Hz{sing}   ",
             end="\r",
             flush=True,
         )
