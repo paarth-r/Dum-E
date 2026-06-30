@@ -109,6 +109,15 @@ class ControllerConfig:
     # this distance (metres). Bounds windup when a joint saturates so reversing is near-instant;
     # large enough not to throttle well-conditioned motion (where achieved tracks the target).
     pivot_leash_m: float = 0.01
+    # Joint-limit avoidance for the velocity-jog position solve: a joint within this many degrees
+    # of a limit is pushed back toward the interior by gain * penetration each IK step. Stops the
+    # solver folding a joint into its limit and locking there; zero effect outside the band.
+    ik_limit_margin_deg: float = 15.0
+    ik_limit_gain: float = 0.5
+    # Posture awareness: nullspace bias pulling pan/lift/elbow toward a natural rest configuration.
+    # Inert when well-conditioned (empty nullspace = exact tracking); near full extension it unfolds
+    # the arm off the singular branch so it keeps tracking instead of stalling. gain is per IK step.
+    ik_posture_gain: float = 0.06
     # Below this position-manipulability the arm reports "near singular" in telemetry (readout
     # only; the DLS damping + leash already keep motion safe there). HOME ~= 0.0024, singular -> 0.
     manipulability_floor: float = 0.0008

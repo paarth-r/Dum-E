@@ -81,6 +81,31 @@ def test_no_lockout_when_joint_saturates(controller):
     assert moved_at is not None  # the arm came back -> no lockout
 
 
+def test_retract_from_extension_does_not_fold_into_limit(controller):
+    """Retracting from full extension must not collapse the arm into a joint limit and lock.
+
+    Bug: at full forward reach (near-singular), pulling straight back in -X drove shoulder_lift
+    up into its 100 deg upper limit and folded the arm down to the floor; once pinned there, no
+    command (not even +Z) recovered it. A correct retract keeps the commanded height — the user
+    never asked Z to change — so the hand stays at a usable height instead of slamming down.
+    """
+    lift_hi = controller.joint_limits[1, 1]  # shoulder_lift upper limit (deg)
+    pivot = lambda: controller.kin_pos.fk(controller.arm.read_joints()[:3])[:3, 3]
+    for _ in range(250):  # push to full forward extension (the singular boundary)
+        controller.step(Command(lin=np.array([1.0, 0.0, 0.0])))
+    p_ext = pivot()
+    for _ in range(80):  # pull straight back — pure -X, never commanding Z
+        controller.step(Command(lin=np.array([-1.0, 0.0, 0.0])))
+    p_ret = pivot()
+    q = controller.arm.read_joints()
+    # The wrist pivot is the controlled quantity. Retracting must actually pull it back in X (the
+    # bug left it stuck within ~1 mm) while holding the height the user never asked to change...
+    assert p_ext[0] - p_ret[0] > 0.05, f"pivot did not retract: dx={(p_ext[0]-p_ret[0])*1000:.0f} mm"
+    assert abs(p_ext[2] - p_ret[2]) < 0.03, f"pivot height drifted {(p_ext[2]-p_ret[2])*1000:.0f} mm"
+    # ...and no joint may be left jammed against its limit (the fold pinned shoulder_lift at 100).
+    assert lift_hi - q[1] > 5.0, f"shoulder_lift pinned near limit: {q[1]:.1f} (limit {lift_hi:.1f})"
+
+
 def test_target_stays_in_workspace(controller):
     cfg = controller.config
     for _ in range(300):  # push hard toward +X +Y +Z for a long time
@@ -129,8 +154,16 @@ def test_home_returns_to_start_config(controller):
     assert np.max(np.abs(controller.arm.read_joints()[:5] - start[:5])) < 0.6
 
 
-def test_telemetry_reports_awareness(controller):
-    """Telemetry surfaces joint-limit margin + a near-singular flag (self-awareness readout)."""
+def test_telemetry_reports_awareness(kin, tmp_path):
+    """Telemetry surfaces joint-limit margin + a near-singular flag (self-awareness readout).
+
+    Posture awareness now actively keeps the arm off the singular branch, so to exercise the
+    near-singular *readout* we disable it (gain 0) and drive to the bare extension boundary.
+    """
+    cfg = ControllerConfig()
+    cfg.ik_posture_gain = 0.0  # let the arm reach the singular pose so the flag can trip
+    controller = Controller(cfg, SimArm(initial_joints=HOME_JOINTS.copy()), kin, PoseStore(tmp_path / "p.json"))
+    controller.start()
     tel = controller.step(Command())  # at HOME: well conditioned, off the limits
     assert tel.near_singular is False
     assert tel.min_joint_margin_deg > 5.0

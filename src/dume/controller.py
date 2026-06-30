@@ -25,7 +25,7 @@ from dume.config import ControllerConfig, ControlMode, GripperMode
 from dume.input_xbox import Command
 from dume.kinematics import Kinematics
 from dume.planning import StraightLinePlanner, Trajectory
-from dume.poses import PoseStore
+from dume.poses import HOME_JOINTS, PoseStore
 
 
 @dataclass
@@ -66,6 +66,7 @@ class Controller:
             joint_names=["shoulder_pan", "shoulder_lift", "elbow_flex"],
         )
         self.joint_limits = self.kin.joint_limits_deg()
+        self.pos_joint_limits = self.kin_pos.joint_limits_deg()  # pan/lift/elbow, for limit avoidance
         self.mode = ControlMode.VELOCITY
         self.gripper_mode = self.config.gripper_mode_default
         self.orientation_lock = False
@@ -226,8 +227,18 @@ class Controller:
         if dist > c.pivot_leash_m:  # anti-lockout: bound how far the target leads reality
             candidate = achieved_pivot + lead * (c.pivot_leash_m / dist)
         self._pivot_target = candidate
-        # Damped least-squares position IK over pan/lift/elbow, seeded from the reference.
-        q_pos = self.kin_pos.ik_position_dls(ref[:3], self._pivot_target, damping=c.dls_damping)
+        # Damped least-squares position IK over pan/lift/elbow, seeded from the reference, with
+        # joint-limit avoidance so it can't fold a joint into its limit and lock there.
+        q_pos = self.kin_pos.ik_position_dls(
+            ref[:3],
+            self._pivot_target,
+            damping=c.dls_damping,
+            limits=self.pos_joint_limits,
+            limit_margin_deg=c.ik_limit_margin_deg,
+            limit_gain=c.ik_limit_gain,
+            neutral_deg=HOME_JOINTS[:3],
+            posture_gain=c.ik_posture_gain,
+        )
 
         # Wrist joints jogged directly (D-pad), rate-limited by wrist_speed, clamped to limits.
         self.wrist_flex_cmd = float(

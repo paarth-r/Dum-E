@@ -149,6 +149,11 @@ class Kinematics:
         damping: float = 0.05,
         iters: int = 12,
         step_deg: float = 0.5,
+        limits: np.ndarray | None = None,
+        limit_margin_deg: float = 15.0,
+        limit_gain: float = 0.5,
+        neutral_deg: np.ndarray | None = None,
+        posture_gain: float = 0.0,
     ) -> np.ndarray:
         """Damped least-squares IK for *position only*, over this instance's joint set.
 
@@ -161,6 +166,20 @@ class Kinematics:
 
         Update rule per step: ``dq = J^T (J J^T + lambda^2 I)^{-1} e``, with ``J`` in metres/radian
         and ``e`` the position error (metres). Returns joints in degrees.
+
+        **Joint-limit avoidance.** Pass ``limits`` (n, 2) ``[lower, upper]`` in degrees to add a
+        soft repulsive term: a joint inside ``limit_margin_deg`` of a limit is pushed back toward
+        the interior by ``limit_gain`` times its penetration each step. This keeps the position
+        task from driving a joint *into* a limit and stalling there (the fold-and-lock the SO-101
+        hit retracting from full extension), and lets a joint that starts pinned relax back out.
+        The term is exactly zero outside the margin band, so well-conditioned tracking is untouched.
+
+        **Posture awareness.** Pass ``neutral_deg`` (n,) plus ``posture_gain`` > 0 to bias the arm
+        toward a natural rest configuration *in the nullspace of the position task* — self-motion
+        that reconfigures the arm without moving the wrist pivot. When the arm is well-conditioned
+        the nullspace is empty, so this does nothing and tracking is exact; near a singularity (full
+        extension) the nullspace opens and the bias unfolds the arm back toward ``neutral_deg``,
+        pulling it off the singular branch so it can keep tracking instead of stalling there.
         """
         q = np.asarray(current_joints_deg, dtype=float).copy()
         target = np.asarray(target_position, dtype=float)
@@ -168,16 +187,37 @@ class Kinematics:
         lam2 = float(damping) ** 2
         step_rad = np.deg2rad(step_deg)
         eye = np.eye(3)
+        lo = hi = None
+        if limits is not None:
+            limits = np.asarray(limits, dtype=float)
+            lo, hi = limits[:, 0], limits[:, 1]
+        neutral = None if neutral_deg is None else np.asarray(neutral_deg, dtype=float)
         for _ in range(iters):
             pos = self.fk(q)[:3, 3]
             e = target - pos
-            if np.linalg.norm(e) < 1e-5:
+            inside_band = lo is not None and (
+                np.any(q > hi - limit_margin_deg) or np.any(q < lo + limit_margin_deg)
+            )
+            # Converged on position *and* no joint sitting in a limit band that still needs to relax.
+            if np.linalg.norm(e) < 1e-5 and not inside_band and posture_gain == 0.0:
                 break
             J = np.empty((3, n))
             for i in range(n):
                 dq = np.zeros(n)
                 dq[i] = step_deg
                 J[:, i] = (self.fk(q + dq)[:3, 3] - pos) / step_rad
-            dtheta = J.T @ np.linalg.solve(J @ J.T + lam2 * eye, e)  # radians
+            jdinv = J.T @ np.linalg.inv(J @ J.T + lam2 * eye)  # damped pseudoinverse (n x 3)
+            dtheta = jdinv @ e  # radians, primary position task
+            if neutral is not None and posture_gain > 0.0:
+                # Nullspace self-motion toward the rest posture: (I - J^+ J) pulls the arm off a
+                # singular branch without disturbing the wrist position.
+                nullspace = np.eye(n) - jdinv @ J
+                dtheta = dtheta + nullspace @ np.deg2rad(posture_gain * (neutral - q))
             q = q + np.rad2deg(dtheta)
+            if lo is not None:
+                # Soft repulsion: push back by gain * how far into the margin band (deg), then clamp.
+                upper_pen = np.maximum(q - (hi - limit_margin_deg), 0.0)
+                lower_pen = np.maximum((lo + limit_margin_deg) - q, 0.0)
+                q = q + limit_gain * (lower_pen - upper_pen)
+                q = np.clip(q, lo, hi)
         return q
