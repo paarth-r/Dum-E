@@ -219,8 +219,17 @@ def cmd_sim(args) -> int:
     has_scene = args.scene or args.camera
     renderer = SimRenderer(urdf_path=arm.config.urdf_path, gui=True, dynamic=has_scene)
     renderer.set_joints(arm.get_joints())
-    # Lighten the GUI: no shadows, no side panels, no extra software renderer pass.
-    for flag in (pb.COV_ENABLE_SHADOWS, pb.COV_ENABLE_GUI, pb.COV_ENABLE_TINY_RENDERER):
+    # Lighten the GUI: no shadows, no side panels, no extra software renderer pass. Also kill
+    # PyBullet's built-in keyboard shortcuts: they bind w=wireframe, a=AABB, g=grid, which collide
+    # with our WASD/G control keys (pressing W to drive forward would flip the view to wireframe).
+    # getKeyboardEvents still delivers the keys to our KeyboardController; only PyBullet's own
+    # handling is suppressed.
+    for flag in (
+        pb.COV_ENABLE_SHADOWS,
+        pb.COV_ENABLE_GUI,
+        pb.COV_ENABLE_TINY_RENDERER,
+        pb.COV_ENABLE_KEYBOARD_SHORTCUTS,
+    ):
         pb.configureDebugVisualizer(flag, 0, physicsClientId=renderer.client)
     nav = OrbitCameraNav(renderer)  # OnShape-style: left-drag orbit, Ctrl+left-drag pan, wheel zoom
     CTRL_KEY = getattr(pb, "B3G_CONTROL", None)
