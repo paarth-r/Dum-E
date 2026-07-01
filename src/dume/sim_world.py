@@ -42,6 +42,46 @@ from dume.camera import CameraFrame, CameraIntrinsics, Detections
 from dume.kinematics import DEFAULT_URDF
 
 # ---------------------------------------------------------------------------
+# Physics parameters
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GraspParams:
+    """Every physics knob for the dynamic grasp sim, in one place.
+
+    Defaults aim for "real-ish": the jaws press on the box and friction holds it, with occasional
+    slip accepted. Reaching high fidelity (reliable pick-and-place) is tuning these, not changing
+    the architecture — raise friction / solver iterations / gripper force, lower box mass, etc.
+
+    Fields
+    ------
+    arm_motor_force:
+        Position-control force (N·m) for the five arm joints — stiff, so the arm tracks command.
+    gripper_motor_force:
+        Bounded force (N·m) for the gripper joint. The core grasp knob: enough to hold the box,
+        not enough to fling it. Stays bounded even when the jaw stalls against the box.
+    jaw_friction / box_friction:
+        Lateral friction on the three jaw links and on dynamic scene objects.
+    sim_timestep:
+        PyBullet fixed timestep (s). The arm advances ``round(dt / sim_timestep)`` substeps per
+        control tick so the grasp resolves at roughly real time.
+    solver_iterations:
+        Constraint solver iterations; higher = steadier contacts.
+    """
+
+    arm_motor_force: float = 10.0
+    gripper_motor_force: float = 2.0
+    jaw_friction: float = 1.5
+    box_friction: float = 1.0
+    sim_timestep: float = 1.0 / 240.0
+    solver_iterations: int = 50
+
+
+# The three links that make up the gripper, used for friction + contact queries.
+JAW_LINKS = ("gripper_link", "gripper_frame_link", "moving_jaw_so101_v1_link")
+
+
+# ---------------------------------------------------------------------------
 # Scene description
 # ---------------------------------------------------------------------------
 
@@ -114,13 +154,25 @@ class SimRenderer:
         kinematic behaviour (arm teleported, props static) that the tests rely on.
     """
 
-    def __init__(self, urdf_path: str = DEFAULT_URDF, gui: bool = False, dynamic: bool = False) -> None:
+    def __init__(
+        self,
+        urdf_path: str = DEFAULT_URDF,
+        gui: bool = False,
+        dynamic: bool = False,
+        grasp: "GraspParams | None" = None,
+    ) -> None:
         self._client: int = p.connect(p.GUI if gui else p.DIRECT)
         self.dynamic = dynamic
+        self.grasp = grasp or GraspParams()
         self._plane: int | None = None
         self._grasp_constraint: int | None = None
         if dynamic:
             p.setGravity(0, 0, -9.81, physicsClientId=self._client)
+            p.setPhysicsEngineParameter(
+                numSolverIterations=self.grasp.solver_iterations,
+                fixedTimeStep=self.grasp.sim_timestep,
+                physicsClientId=self._client,
+            )
             # Procedural ground plane (no pybullet_data dependency — the source build ships none).
             plane_col = p.createCollisionShape(p.GEOM_PLANE, physicsClientId=self._client)
             self._plane = p.createMultiBody(0, plane_col, physicsClientId=self._client)
@@ -132,6 +184,16 @@ class SimRenderer:
             useFixedBase=True,
             physicsClientId=self._client,
         )
+        if dynamic:
+            # Friction on the jaw links so a clamped object is held by contact, not a constraint.
+            for name in JAW_LINKS:
+                li = self.link_index(name)
+                if li >= 0:
+                    p.changeDynamics(
+                        self._arm_body, li,
+                        lateralFriction=self.grasp.jaw_friction,
+                        physicsClientId=self._client,
+                    )
         # Build motor_name -> joint_index mapping (only for joints in MOTOR_ORDER).
         self._joint_indices: dict[str, int] = {}
         n = p.getNumJoints(self._arm_body, physicsClientId=self._client)
@@ -233,8 +295,10 @@ class SimRenderer:
                 physicsClientId=self._client,
             )
             if obj.mass > 0:
-                # Friction so a grasped/resting object behaves sensibly.
-                p.changeDynamics(body_id, -1, lateralFriction=1.0, physicsClientId=self._client)
+                # Friction so a grasped/resting object behaves sensibly (held by jaw contact).
+                p.changeDynamics(
+                    body_id, -1, lateralFriction=self.grasp.box_friction, physicsClientId=self._client
+                )
             self._scene_bodies[obj.name] = body_id
             self._body_to_idx[body_id] = obj_idx
 
