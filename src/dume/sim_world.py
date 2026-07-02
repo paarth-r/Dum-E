@@ -313,6 +313,14 @@ class SimRenderer:
         if self.dynamic:
             p.stepSimulation(physicsClientId=self._client)
 
+    def contact_points(self, body_a: int, body_b: int) -> tuple[int, float]:
+        """(contact count, summed normal force N) between two bodies from the last physics step.
+
+        The tangible signal that the grip is engaging, and the data hook for grasp-quality metrics.
+        """
+        pts = p.getContactPoints(bodyA=body_a, bodyB=body_b, physicsClientId=self._client)
+        return len(pts), float(sum(pt[9] for pt in pts))
+
     def link_index(self, link_name: str) -> int:
         """PyBullet link index whose child link is *link_name*; -1 (base) if not found."""
         for i in range(p.getNumJoints(self._arm_body, physicsClientId=self._client)):
@@ -377,6 +385,84 @@ class SimRenderer:
 
     def __exit__(self, *_) -> None:
         self.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Physics-backed arm I/O
+# ---------------------------------------------------------------------------
+
+class PyBulletArm:
+    """``ArmIO`` backed by PyBullet physics — the faithful hardware surrogate the control stack
+    drives, so ``dume sim`` runs the real code and shows how it behaves IRL.
+
+    Mirrors :class:`~dume.arm.SO101Arm`'s interface, but against a simulated body instead of
+    servos:
+
+    - ``write_joints`` drives position-control motors toward the command and advances the sim by
+      one control ``dt`` (send an action, time elapses). The gripper motor force is *bounded*
+      (:class:`GraspParams`), so a jaw pressing on a box holds it by friction without flinging it.
+    - ``read_joints`` returns the physically-achieved joint positions (``getJointState``), so
+      feedback reflects reality — a jaw stalled against a box reads short of the commanded closed
+      value, exactly as a real servo would. Gripper is reported in the same 0..100 motor units
+      ``SO101Arm`` uses.
+
+    The renderer owns the PyBullet client; this class only reads/writes the arm body in it.
+    """
+
+    name = "pybullet"
+
+    def __init__(self, renderer: "SimRenderer", *, dt: float = 0.02) -> None:
+        self._r = renderer
+        self._client = renderer.client
+        self._grasp = renderer.grasp
+        self._idx = renderer.joint_indices  # motor name -> joint index
+        self._substeps = max(1, round(dt / self._grasp.sim_timestep))
+
+    def _force(self, motor: str) -> float:
+        return self._grasp.gripper_motor_force if motor == "gripper" else self._grasp.arm_motor_force
+
+    def connect(self) -> None:
+        # Hold the loaded pose so the arm doesn't sag under gravity before control engages.
+        self.write_joints(self.read_joints())
+
+    def disconnect(self) -> None:
+        pass  # the renderer owns the client lifecycle
+
+    def is_calibrated(self) -> bool:
+        return True
+
+    def read_joints(self) -> np.ndarray:
+        out = []
+        for m in MOTOR_ORDER:
+            idx = self._idx.get(m)
+            if idx is None:
+                out.append(0.0)
+                continue
+            ang = p.getJointState(self._r.arm_body, idx, physicsClientId=self._client)[0]
+            out.append(math.degrees(ang))
+        return np.array(out, dtype=float)
+
+    def write_joints(self, joints) -> None:
+        q = np.asarray(joints, dtype=float)
+        for i, m in enumerate(MOTOR_ORDER):
+            idx = self._idx.get(m)
+            if idx is None:
+                continue
+            p.setJointMotorControl2(
+                self._r.arm_body, idx, p.POSITION_CONTROL,
+                targetPosition=math.radians(q[i]), force=self._force(m),
+                physicsClientId=self._client,
+            )
+        for _ in range(self._substeps):
+            p.stepSimulation(physicsClientId=self._client)
+
+    def relax(self) -> None:
+        """Cut motor torque (velocity control at zero force) so the arm can be moved / sags."""
+        for idx in self._idx.values():
+            p.setJointMotorControl2(
+                self._r.arm_body, idx, p.VELOCITY_CONTROL, force=0.0,
+                physicsClientId=self._client,
+            )
 
 
 # ---------------------------------------------------------------------------
