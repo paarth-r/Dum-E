@@ -90,6 +90,25 @@ def test_relax_lets_arm_sag_under_gravity():
         assert np.max(np.abs(q_sagged[:5] - q_held[:5])) > 5.0
 
 
+def test_control_stack_drives_pybullet_arm_forward():
+    """End-to-end: DumeArm over PyBulletArm — jogging +X physically moves the end-effector forward.
+
+    Exercises the real control loop (IK, q_ref, motor write, physical read) against physics, the
+    way `dume sim` runs it. Deterministic; does not depend on grasp reliability."""
+    from dume.config import ControllerConfig
+    from dume.service import DumeArm
+
+    cfg = ControllerConfig()
+    with SimRenderer(gui=False, dynamic=True) as r:
+        r.set_joints(HOME_JOINTS)
+        arm = DumeArm(config=cfg, arm=PyBulletArm(r, dt=cfg.dt))
+        arm.connect()
+        x0 = arm.get_xyzrpy()[0]
+        for _ in range(40):
+            arm.jog(lin=(1.0, 0.0, 0.0))  # +X forward
+        assert arm.get_xyzrpy()[0] - x0 > 0.01  # the physical arm tracked the command forward
+
+
 def test_gripper_read_stalls_on_obstacle():
     """The faithfulness property: a jaw that can't close through an object reads short of the
     commanded closed value — exactly what a real servo feedback would report."""

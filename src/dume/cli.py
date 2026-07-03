@@ -197,28 +197,31 @@ def cmd_run(args) -> int:
 def cmd_sim(args) -> int:
     """Interactive PyBullet sim: drive the SO-101 in a 3D window with the Xbox controller.
 
-    Pure kinematic mirror — the controller runs exactly as on hardware (over a SimArm), and the
-    renderer reflects each commanded joint vector. ``--noise`` injects synthetic servo feedback
-    noise so you can feel that the q_ref smoothing keeps motion clean. ``--scene`` spawns a demo
-    object; with ``--camera`` the end-effector camera's live detections print each tick.
+    One faithful path — the control stack drives a *physics-backed* arm (``PyBulletArm``: motors +
+    real contacts), so the sim shows how the code behaves IRL. ``--scene`` spawns a graspable box
+    (jaws close, friction holds it, opening drops it — fully emergent, no magnet); with ``--camera``
+    the end-effector camera's live detections print each tick.
     """
-    import numpy as _np
     import pybullet as pb
 
     from dume.camera import CameraIntrinsics, camera_pose_from_fk
     from dume.input_xbox import XboxController
+    from dume.poses import HOME_JOINTS
     from dume.service import DumeArm
-    from dume.sim_world import OrbitCameraNav, SceneObject, SimCamera, SimRenderer, SimScene
+    from dume.sim_world import (
+        OrbitCameraNav, PyBulletArm, SceneObject, SimCamera, SimRenderer, SimScene,
+    )
 
-    arm = DumeArm(dry_run=True)
+    cfg = ControllerConfig()
+    has_scene = args.scene or args.camera
+    # Physics always on (gravity + ground); a scene just adds a box. The control stack drives the
+    # PyBulletArm directly, so the GUI shows the physical arm — no separate commanded-joint mirror.
+    renderer = SimRenderer(urdf_path=cfg.urdf_path, gui=True, dynamic=True)
+    renderer.set_joints(HOME_JOINTS)  # start posed at HOME; connect() then holds it with motors
+    arm = DumeArm(config=cfg, arm=PyBulletArm(renderer, dt=cfg.dt))
     arm.connect()
     if args.noise > 0:
-        arm.arm.servo_noise_deg = float(args.noise)
-        print(f"Injecting {args.noise} deg servo-feedback noise (the smoothing should absorb it).")
-
-    has_scene = args.scene or args.camera
-    renderer = SimRenderer(urdf_path=arm.config.urdf_path, gui=True, dynamic=has_scene)
-    renderer.set_joints(arm.get_joints())
+        print("--noise is ignored in the physics sim (feedback is real); use `run --dry-run` for it.")
     # Lighten the GUI: no shadows, no side panels, no extra software renderer pass. Also kill
     # PyBullet's built-in keyboard shortcuts: they bind w=wireframe, a=AABB, g=grid, which collide
     # with our WASD/G control keys (pressing W to drive forward would flip the view to wireframe).
@@ -259,40 +262,29 @@ def cmd_sim(args) -> int:
         except Exception:
             cv2 = None
 
-    state = {"i": 0, "holding": False}
-    GRASP_DIST, CLOSE_T, OPEN_T = 0.07, 40.0, 60.0  # m / gripper units
+    state = {"i": 0}
     CAM_EVERY = 5  # render the camera every 5th control tick (~10 Hz vs the 50 Hz loop)
 
     def on_tick(tel):
-        renderer.set_joints(tel.joints_sent)  # mirror the commanded config into the 3D view
-        # OnShape-style camera. Reuse the keyboard controller's last events (getKeyboardEvents
-        # consumes on read) for the Ctrl check; fall back to a fresh read under an Xbox pad.
+        # The physics arm moves itself — motors are stepped inside PyBulletArm.write_joints, so
+        # there's no commanded-joint mirror to apply here. OnShape-style camera: reuse the keyboard
+        # controller's last events (getKeyboardEvents consumes on read) for the Ctrl check; fall
+        # back to a fresh read under an Xbox pad.
         keys = getattr(source, "last_keys", None)
         if keys is None:
             keys = pb.getKeyboardEvents(physicsClientId=renderer.client)
         ctrl = CTRL_KEY is not None and bool(keys.get(CTRL_KEY, 0) & pb.KEY_IS_DOWN)
         nav.update(ctrl)
-        if has_scene:
-            # Magnet grasp: close the gripper near the box to pick it up; open to drop it.
-            ee = arm.kin.fk(tel.joints_sent)[:3, 3]
-            bpos, _ = pb.getBasePositionAndOrientation(box_id, physicsClientId=renderer.client)
-            dist = float(_np.linalg.norm(ee - _np.asarray(bpos)))
-            if not state["holding"] and tel.gripper < CLOSE_T and dist < GRASP_DIST:
-                renderer.attach(box_id); state["holding"] = True
-            elif state["holding"] and tel.gripper > OPEN_T:
-                renderer.release(); state["holding"] = False
-            renderer.step_physics()
         state["i"] += 1
+        if box_id is not None:  # grip readout: real contact points + normal force, and box height
+            n, f = renderer.contact_points(renderer.arm_body, box_id)
+            bz = pb.getBasePositionAndOrientation(box_id, physicsClientId=renderer.client)[0][2]
+            print(f"grip: contacts={n} force={f:5.1f}N  box_z={bz:+.3f}m   ", end="\r", flush=True)
         if cam is not None and state["i"] % CAM_EVERY == 0:  # throttled — vision is the slow part
             frame = cam.capture()  # re-render from the CURRENT EE pose
             if cv2 is not None:
                 cv2.imshow("dume EE camera", frame.rgb[:, :, ::-1])  # RGB->BGR
                 cv2.waitKey(1)
-            dets = cam.detect()
-            grab = " [HOLDING]" if state["holding"] else ""
-            print(f"camera sees {len(dets)} object(s)" + (
-                f" nearest~{_np.min(dets.depths):.3f}m" if len(dets) else "") + grab,
-                end="\r", flush=True)
 
     from dume.input_keyboard import KeyboardController
 
