@@ -306,6 +306,51 @@
     <axis xyz="0 0 0"/>
   </joint>
 
+  <!-- End-effector camera (Arducam UC-844, 1280x800 global-shutter mono).
+       Hand-authored, NOT from onshape-to-robot: re-exporting this URDF will drop it.
+
+       Frame: OpenCV optical convention (+z forward into the scene, +x right, +y down),
+       identity rotation w.r.t. gripper_frame_link — the camera looks out along the claw's
+       reach and is not rolled, so optical axes == gripper_frame axes.
+
+       Translation, in gripper_frame_link (origin at the TCP, +z out along the reach):
+         x = +0.049413  = 0.02730 (claw underside plane, measured off the fixed-jaw mesh:
+                        a flat face at x = +27.30 mm spanning z = -95..-45 mm)
+                        + 0.022113 (0.870604 in, sensor centre below the hole centre).
+                        Camera hangs below the FIXED jaw; the moving jaw is on -x.
+         y =  0         assumed centred on the claw mid-plane.
+         z = -0.0550    PROVISIONAL, from the CAD sketch. Constrained: the hole must lie in
+                        the flat underside, so z is bounded to roughly -0.095..-0.045 —
+                        forward of that the finger tapers and there is no face to mount to.
+                        Needs the real hole-centre measurement; fingertips are z = +0.0063. -->
+  <link name="camera_optical_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1e-9"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
+    <!-- Schematic 38 mm case so the mount is visible in a viewer. Offset -0.003113 in x so the
+         box's TOP face lands exactly on the claw underside plane (x = +0.02730): the box centre
+         sits at 0.049413 - 0.003113 = 0.04630, and 0.04630 - 0.038/2 = 0.02730. The optical
+         origin itself is NOT moved by this — the frame stays on the measured sensor centre and
+         only the decoration is aligned. Visual only: no collision geometry, so sim contact
+         behaviour is unchanged. -->
+    <visual>
+      <origin xyz="-0.003113 0 -0.015" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.038 0.038 0.030"/>
+      </geometry>
+      <material name="3d_printed"/>
+    </visual>
+  </link>
+
+  <joint name="camera_optical_joint" type="fixed">
+    <origin xyz="0.049413 0 -0.0550" rpy="0 0 0"/>
+    <parent link="gripper_frame_link"/>
+    <child link="camera_optical_link"/>
+    <axis xyz="0 0 0"/>
+  </joint>
+
   <!-- Link moving_jaw_so101_v1 -->
   <link name="moving_jaw_so101_v1_link">
     <inertial>
