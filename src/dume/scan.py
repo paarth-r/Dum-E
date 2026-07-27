@@ -64,6 +64,49 @@ def measured_camera_pose(kin, arm, *, samples: int = 5, mount=None, sleep=time.s
     return kin.fk(joints) @ mount, joints
 
 
+class InMemoryStore:
+    """Store-shaped adapter for generated setpoints, so ``run_scan`` needs no special case."""
+
+    def __init__(self, mapping):
+        self._m = {k: np.asarray(v, dtype=float) for k, v in mapping.items()}
+
+    def has(self, name) -> bool:
+        return name in self._m
+
+    def get(self, name) -> np.ndarray:
+        return self._m[name].copy()
+
+    def names(self) -> list[str]:
+        return list(self._m)
+
+
+def sweep_setpoints(base_joints, n: int = 7, pan_deg: float = 24.0):
+    """Generate ``n`` configurations fanning shoulder_pan around ``base_joints``.
+
+    Triangulation needs parallax, and parallax needs the camera to actually move between views.
+    Panning the base sweeps the camera along an arc — a large lateral baseline for a small
+    joint excursion, and it keeps the scene broadly in frame because the camera rotates far
+    less than it translates relative to nearby objects.
+
+    Returns ``(names, InMemoryStore)`` ordered so the sweep runs one way across the arc, which
+    also means every stop is approached from the same direction — the standard trick for
+    keeping gear backlash consistent instead of flipping sign mid-scan.
+    """
+    base = np.asarray(base_joints, dtype=float)
+    if n < 2:
+        raise ValueError("a sweep needs at least 2 viewpoints to triangulate anything")
+    offsets = np.linspace(-pan_deg / 2.0, pan_deg / 2.0, n)
+    mapping = {}
+    names = []
+    for i, off in enumerate(offsets):
+        q = base.copy()
+        q[0] = base[0] + off  # shoulder_pan
+        name = f"sweep{i:02d}"
+        mapping[name] = q
+        names.append(name)
+    return names, InMemoryStore(mapping)
+
+
 def run_scan(
     dume_arm,
     camera,

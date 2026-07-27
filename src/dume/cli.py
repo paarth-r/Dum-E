@@ -7,6 +7,7 @@
     dume run [--dry-run]        Xbox teleoperation (velocity jog + pose mode); --view adds camera
     dume view                   live camera view only (no arm) — use this to focus the lens
     dume scan [--poses A B]     walk saved setpoints, streaming the end-effector camera
+    dume cloud                  sweep the arm, triangulating a live 3D point cloud
     dume goto X Y Z R P Y       move to an absolute pose (metres, radians)
 """
 
@@ -208,6 +209,67 @@ def cmd_view(args) -> int:
             if key in (ord("q"), 27):
                 break
     print("Closed.")
+    return 0
+
+
+def cmd_cloud(args) -> int:
+    """Sweep the arm, triangulating a live point cloud in the arm base frame."""
+    from dume.arducam import ArduCamSource
+    from dume.cloudview import CloudView
+    from dume.liveview import LiveView
+    from dume.pointcloud import CloudBuilder
+    from dume.scan import averaged_joints, run_scan, sweep_setpoints
+    from dume.service import DumeArm
+
+    with DumeArm(dry_run=args.dry_run) as arm:
+        if not args.dry_run and not arm.arm.is_calibrated():
+            print("Arm is not calibrated. Run `dume calibrate` first.", file=sys.stderr)
+            return 2
+        arm.config.joint_slew_deg = args.slew
+
+        base = averaged_joints(arm.arm, 5)
+        names, store = sweep_setpoints(base, n=args.stops, pan_deg=args.pan)
+        print(f"Sweeping {args.pan:.0f} deg of shoulder_pan in {args.stops} stops "
+              f"around pan={base[0]:.1f} deg.")
+        print("Any key in the camera window aborts.")
+
+        with ArduCamSource() as camera, LiveView("dume cloud - camera") as view:
+            builder = CloudBuilder(
+                camera.intrinsics.K,
+                min_baseline=args.min_baseline,
+                max_range=args.max_range,
+            )
+            cloud = None
+            if not args.no_3d:
+                cloud = CloudView(arm.config.urdf_path, arm.kin.joint_names)
+            try:
+                tick = _camera_tick(view, camera, ["sweeping — any key aborts"])
+                for stop in run_scan(arm, camera, names, store, dwell=args.dwell,
+                                     samples=args.samples, on_tick=tick):
+                    added = builder.add(stop.frame.rgb, stop.pose)
+                    print(f"  [{stop.name}] matches={builder.last_matches:5d} "
+                          f"kept={builder.last_kept:5d} total={len(builder.points):6d}")
+                    view.show(stop.frame.rgb,
+                              [f"{stop.name}: +{added} pts", f"cloud {len(builder.points)}"])
+                    if cloud is not None:
+                        cloud.set_joints(stop.joints)
+                        cloud.set_points(builder.points)
+
+                pts = builder.points
+                print(f"\nCloud: {len(pts)} points, base frame, from {builder.keyframes} keyframes.")
+                if len(pts):
+                    lo, hi = pts.min(0) * 1000, pts.max(0) * 1000
+                    print(f"  extent x[{lo[0]:7.0f},{hi[0]:7.0f}] "
+                          f"y[{lo[1]:7.0f},{hi[1]:7.0f}] z[{lo[2]:7.0f},{hi[2]:7.0f}] mm")
+                    out = Path(args.out).expanduser()
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    np.save(out, pts)
+                    print(f"  saved {out}  (NON-METRIC: intrinsics uncalibrated)")
+                if cloud is not None:
+                    input("\n3D view is open. Press Enter to close... ")
+            finally:
+                if cloud is not None:
+                    cloud.close()
     return 0
 
 
@@ -529,6 +591,20 @@ def build_parser() -> argparse.ArgumentParser:
     psc.add_argument("--save", help="directory to write each stop's frame + measured pose")
     psc.add_argument("--dry-run", action="store_true", help="no motor motion (simulation)")
 
+    pcl = sub.add_parser("cloud", help="sweep the arm and triangulate a live point cloud")
+    pcl.add_argument("--stops", type=int, default=7, help="viewpoints in the sweep (default: 7)")
+    pcl.add_argument("--pan", type=float, default=24.0,
+                     help="total shoulder_pan sweep in degrees (default: 24)")
+    pcl.add_argument("--dwell", type=float, default=0.5, help="seconds held at each stop")
+    pcl.add_argument("--samples", type=int, default=5, help="measured joint reads averaged per stop")
+    pcl.add_argument("--slew", type=float, default=3.0, help="deg/tick joint cap (default: 3.0)")
+    pcl.add_argument("--min-baseline", type=float, default=0.02,
+                     help="metres of camera motion required between keyframes (default: 0.02)")
+    pcl.add_argument("--max-range", type=float, default=2.0, help="reject points beyond this (m)")
+    pcl.add_argument("--out", default="~/scans/cloud.npy", help="where to save the base-frame points")
+    pcl.add_argument("--no-3d", action="store_true", help="skip the PyBullet 3D view")
+    pcl.add_argument("--dry-run", action="store_true", help="no motor motion (simulation)")
+
     pg = sub.add_parser("goto", help="move to an absolute pose")
     pg.add_argument("pose", nargs=6, type=float, metavar=("X", "Y", "Z", "ROLL", "PITCH", "YAW"))
     pg.add_argument("--dry-run", action="store_true")
@@ -554,6 +630,7 @@ def main(argv=None) -> int:
         "run": cmd_run,
         "view": cmd_view,
         "scan": cmd_scan,
+        "cloud": cmd_cloud,
         "goto": cmd_goto,
         "sim": cmd_sim,
     }[args.command](args)

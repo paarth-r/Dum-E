@@ -74,6 +74,32 @@ lives in the URDF as `camera_optical_link`, so FK walks straight to the camera.
 .venv/bin/dume scan --save ~/scans/01  # also write each stop's frame + measured pose
 ```
 
+### Point cloud (`dume cloud`)
+
+```bash
+.venv/bin/dume cloud                   # sweep, triangulate, live 3D view, save to ~/scans/cloud.npy
+.venv/bin/dume cloud --stops 11 --pan 36   # wider sweep, more viewpoints
+.venv/bin/dume cloud --no-3d           # skip the PyBullet window
+```
+
+Sweeps `shoulder_pan` around wherever the arm currently is, capturing a posed frame at each
+stop, matching ORB features between successive keyframes, and triangulating them through
+`flown_stereo`. The cloud accumulates live in the **arm base frame** — origin at the base —
+and renders in a PyBullet window alongside the arm itself, so you can see whether the geometry
+lands where it should.
+
+The sweep runs one way across the arc, which means every stop is approached from the same
+direction; that keeps gear backlash loaded consistently instead of flipping sign mid-scan.
+
+Points are rejected on three independent grounds: behind either camera, high reprojection
+error (the main defence against bad matches), and out of range. Frames closer together than
+`--min-baseline` are skipped entirely, because near-parallel rays triangulate noise into
+enormous distances.
+
+**The cloud is non-metric.** Triangulated depth scales directly with focal length, and the
+intrinsics are still a guess, so the structure is right and the scale is not. Do not measure
+anything off it until a real calibration lands.
+
 `view` touches no hardware but the camera and stays open until you press `q`. It overlays a
 live focus readout — Laplacian variance and ORB keypoint count — so setting the M12 lens is
 hill-climbing on a number rather than squinting at a blurry picture. Turn the barrel until
