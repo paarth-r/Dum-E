@@ -116,11 +116,16 @@ class DumeArm:
                     time.sleep(self.config.dt)
         return self.get_pose()
 
-    def goto_joints(self, joints, *, wait: bool = True, timeout: float = 15.0):
+    def goto_joints(self, joints, *, wait: bool = True, timeout: float = 15.0, on_tick=None):
         """Joint-space move to an exact configuration (length-6, in ``arm.MOTOR_ORDER``).
 
         Straight-line in joint space (no IK), so it reproduces a captured pose exactly. The
         sixth element drives the gripper. Used to send the arm to its saved start pose.
+
+        ``on_tick`` is called once per control tick while moving — used by ``dume scan`` to
+        stream the camera and to abort. Returning ``False`` from it stops the move where it is,
+        which is the abort path for scripted motion: the arm holds its current commanded
+        position rather than continuing to a target the user has decided against.
         """
         target = np.asarray(joints, dtype=float)
         self.controller.gripper_cmd = float(target[5])
@@ -129,6 +134,10 @@ class DumeArm:
             deadline = time.perf_counter() + timeout
             while self.controller._joint_target is not None and time.perf_counter() < deadline:
                 self.controller.step(Command())
+                if on_tick is not None and on_tick() is False:
+                    # Drop the target so the controller holds here instead of resuming.
+                    self.controller._joint_target = None
+                    break
                 if isinstance(self.arm, SO101Arm):
                     time.sleep(self.config.dt)
         return self.get_pose()

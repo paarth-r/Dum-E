@@ -4,13 +4,15 @@
     dume calibrate              one-time SO-101 calibration (wraps lerobot)
     dume axes                   print live controller axes/buttons (verify mapping)
     dume save-pose [--name N]   hand-pose the arm, hit Enter to save its joints (default: start)
-    dume run [--dry-run]        Xbox teleoperation (velocity jog + pose mode)
+    dume run [--dry-run]        Xbox teleoperation (velocity jog + pose mode); --view adds camera
+    dume scan [--poses A B]     walk saved setpoints, streaming the end-effector camera
     dume goto X Y Z R P Y       move to an absolute pose (metres, radians)
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import shutil
 import subprocess
 import sys
@@ -159,6 +161,94 @@ def cmd_save_pose(args) -> int:
     return 0
 
 
+def _camera_tick(view, camera, extra_lines=None):
+    """Tick hook that renders the live feed and reports a keypress as an abort.
+
+    Deliberately does NOT read joints to compute a pose: ``controller.step`` already reads the
+    bus every tick, and a second read here would double serial traffic in the control loop.
+    Poses are attached at stops, where the arm is stationary and reads can be averaged.
+    """
+
+    def tick(*_):
+        frame = camera.capture()
+        key = view.show(frame.rgb, list(extra_lines or []))
+        return False if key != 255 else None  # 255 == no key (waitKey -1 masked)
+
+    return tick
+
+
+def cmd_scan(args) -> int:
+    """Walk the arm through saved setpoints, streaming the end-effector camera."""
+    from dume.arducam import ArduCamSource
+    from dume.liveview import LiveView, pose_lines
+    from dume.poses import DEFAULT_JOINT_STORE, JointPoseStore
+    from dume.scan import run_scan
+    from dume.service import DumeArm
+
+    store = JointPoseStore(args.file or DEFAULT_JOINT_STORE)
+    names = args.poses or store.names()
+    if not names:
+        print(f"No saved setpoints in {store.path}. Capture one with `dume save-pose`.",
+              file=sys.stderr)
+        return 2
+    missing = [n for n in names if not store.has(n)]
+    if missing:
+        print(f"Unknown setpoint(s) {missing}. Known: {store.names()}", file=sys.stderr)
+        return 2
+
+    out_dir = None
+    if args.save:
+        out_dir = Path(args.save).expanduser()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    with DumeArm(dry_run=args.dry_run) as arm:
+        if not args.dry_run and not arm.arm.is_calibrated():
+            print("Arm is not calibrated. Run `dume calibrate` first.", file=sys.stderr)
+            return 2
+        # Scripted motion moves with nobody's hand on the arm; default to a gentler cap.
+        arm.config.joint_slew_deg = args.slew
+        print(f"Visiting {len(names)} setpoint(s): {', '.join(names)}")
+        print(f"Slew {args.slew} deg/tick, dwell {args.dwell}s. Any key in the view aborts.")
+
+        with ArduCamSource() as camera, LiveView("dume scan") as view:
+            print(f"Camera on device {camera.device} ({camera.intrinsics.width}x"
+                  f"{camera.intrinsics.height}, intrinsics UNCALIBRATED)")
+            tick = _camera_tick(view, camera, ["scanning — any key aborts"])
+            stops = 0
+            for stop in run_scan(arm, camera, names, store, dwell=args.dwell,
+                                 samples=args.samples, on_tick=tick):
+                stops += 1
+                xyz = stop.pose[:3, 3] * 1000
+                print(f"  [{stop.name}] camera at ({xyz[0]:7.1f},{xyz[1]:7.1f},{xyz[2]:7.1f}) mm")
+                view.show(stop.frame.rgb, [f"stop: {stop.name}"] + pose_lines(stop.pose))
+                if out_dir is not None:
+                    _write_stop(out_dir, stop)
+            print(f"Captured {stops} of {len(names)} stop(s)"
+                  + (f" to {out_dir}" if out_dir else "")
+                  + ("" if stops == len(names) else " — aborted early."))
+    return 0
+
+
+def _write_stop(out_dir: Path, stop) -> None:
+    """Persist one stop: the frame, plus the measured pose and joints beside it."""
+    import json
+
+    import cv2
+
+    cv2.imwrite(str(out_dir / f"{stop.name}.png"), stop.frame.rgb)
+    (out_dir / f"{stop.name}.json").write_text(
+        json.dumps(
+            {
+                "name": stop.name,
+                "joints_measured_deg": stop.joints.tolist(),
+                "camera_pose_in_base": stop.pose.tolist(),
+                "note": "pose is FK of MEASURED joints; intrinsics are uncalibrated",
+            },
+            indent=2,
+        )
+    )
+
+
 def cmd_run(args) -> int:
     from dume.input_xbox import XboxController
     from dume.poses import DEFAULT_JOINT_STORE, JointPoseStore
@@ -187,7 +277,22 @@ def cmd_run(args) -> int:
             "RT: gripper (squeeze)  |  X: gripper mode (squeeze/rate)  |  B: velocity/freeze  |  Ctrl-C: quit"
         )
         try:
-            arm.run_teleop(xb.poll, on_tick=_status_printer())
+            with contextlib.ExitStack() as stack:
+                on_tick = _status_printer()
+                if args.view:
+                    from dume.arducam import ArduCamSource
+                    from dume.liveview import LiveView
+
+                    camera = stack.enter_context(ArduCamSource())
+                    view = stack.enter_context(LiveView("dume camera"))
+                    print(f"Camera on device {camera.device} (intrinsics UNCALIBRATED)")
+                    status = on_tick
+
+                    def on_tick(tel):  # noqa: F811 — compose, don't replace the status line
+                        status(tel)
+                        view.show(camera.capture().rgb, [])
+
+                arm.run_teleop(xb.poll, on_tick=on_tick)
         finally:
             xb.disconnect()
             print("\nStopped.")
@@ -371,6 +476,20 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--start-pose", default="start", help="saved joint pose to start at (default: start)")
     pr.add_argument("--start-file", help="JSON store path (default: ~/.dume/joint_poses.json)")
     pr.add_argument("--no-start-pose", action="store_true", help="don't move to a start pose on launch")
+    pr.add_argument("--view", action="store_true", help="show the end-effector camera feed")
+
+    psc = sub.add_parser("scan", help="walk saved setpoints, streaming the end-effector camera")
+    psc.add_argument("--poses", nargs="+", help="setpoint names to visit (default: all saved)")
+    psc.add_argument("--file", help="JSON store path (default: ~/.dume/joint_poses.json)")
+    psc.add_argument("--dwell", type=float, default=0.6,
+                     help="seconds held at each stop before measuring (default: 0.6)")
+    psc.add_argument("--samples", type=int, default=5,
+                     help="measured joint reads averaged at each stop (default: 5)")
+    psc.add_argument("--slew", type=float, default=3.0,
+                     help="deg/tick joint cap; lower than teleop's 6.0 since nobody's hand is "
+                          "on the arm (default: 3.0)")
+    psc.add_argument("--save", help="directory to write each stop's frame + measured pose")
+    psc.add_argument("--dry-run", action="store_true", help="no motor motion (simulation)")
 
     pg = sub.add_parser("goto", help="move to an absolute pose")
     pg.add_argument("pose", nargs=6, type=float, metavar=("X", "Y", "Z", "ROLL", "PITCH", "YAW"))
@@ -395,6 +514,7 @@ def main(argv=None) -> int:
         "axes": cmd_axes,
         "save-pose": cmd_save_pose,
         "run": cmd_run,
+        "scan": cmd_scan,
         "goto": cmd_goto,
         "sim": cmd_sim,
     }[args.command](args)

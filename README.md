@@ -61,6 +61,39 @@ It doubles as the teleop-feel test rig and the cockpit for recording demonstrati
 - **Camera:** a live end-effector RGB/depth feed with object detection.
 - **Navigate:** OnShape-style — left-drag orbit, `Ctrl`+left-drag pan, scroll to zoom.
 
+## End-effector camera (`dume scan`, `dume run --view`)
+
+The claw carries an **Arducam UC-844** (1280×800 global-shutter mono, OV9281). Its mount frame
+lives in the URDF as `camera_optical_link`, so FK walks straight to the camera.
+
+```bash
+.venv/bin/dume run --view              # teleop with the live camera feed
+.venv/bin/dume scan                    # visit every saved setpoint, streaming the feed
+.venv/bin/dume scan --poses a b c      # visit specific setpoints, in order
+.venv/bin/dume scan --save ~/scans/01  # also write each stop's frame + measured pose
+```
+
+`scan` walks the arm through saved setpoints (see [`docs/setpoints.md`](docs/setpoints.md)),
+pausing at each to capture a frame paired with the camera's pose in the **arm base frame**.
+Any keypress in the view window aborts the whole scan, and it moves at a gentler slew than
+teleop by default since nobody's hand is on the arm.
+
+Two things worth knowing before trusting anything measured from these frames:
+
+- **The camera is picked by resolution, not device index.** macOS enumeration order is not
+  stable, and choosing the wrong camera is silent — frames arrive and look fine while meaning
+  nothing. A machine with no 1280×800 device gets an error naming what *was* found.
+- **Poses come from measured joints, never commanded ones.** The controller deliberately
+  ignores servo feedback to avoid jitter, which is right for control and wrong for perception:
+  `q_ref` is where the arm was *told* to go, and gravity sag puts it degrees away. Since that
+  error is correlated across views it does not average out. `scan` averages several measured
+  reads during the dwell instead, which is valid only because the arm is stationary.
+
+**Intrinsics are still an uncalibrated placeholder** (`ArduCamSource.calibrated` is `False`).
+Anything metric derived from these frames is scaled by however wrong the guessed focal length
+is. The mount translation is CAD-derived rather than hand-eye calibrated, and its position
+along the reach is provisional.
+
 ## Perception & learning (scaffolding)
 
 Foundations toward learned, generalizable grasping. Everything hardware/data-independent is real
