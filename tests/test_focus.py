@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from dume.focus import FEATURES_ENOUGH, SHARP_ENOUGH, feature_count, focus_lines, sharpness
+from dume.focus import FEATURES_ENOUGH, feature_count, focus_lines, sharpness
 
 
 @pytest.fixture
@@ -47,13 +47,25 @@ def test_feature_count_respects_the_cap(textured):
     assert feature_count(textured, max_features=50) <= 50
 
 
-def test_focus_lines_flag_a_soft_image():
+def test_focus_lines_flag_a_featureless_image():
     flat = np.full((240, 320), 100, dtype=np.uint8)
-    lines = focus_lines(flat)
-    assert any("TOO SOFT" in ln for ln in lines)
+    assert any("TOO SOFT" in ln for ln in focus_lines(flat))
 
 
-def test_focus_lines_report_both_thresholds(textured):
-    lines = focus_lines(textured)
-    assert any(str(int(SHARP_ENOUGH)) in ln for ln in lines)
-    assert any(str(FEATURES_ENOUGH) in ln for ln in lines)
+def test_focus_lines_pass_a_textured_image(textured):
+    assert any("USABLE" in ln for ln in focus_lines(textured))
+
+
+def test_verdict_ignores_sharpness(textured, monkeypatch):
+    """The usable/not call must come from feature count alone.
+
+    Regression: an absolute sharpness threshold called a genuinely focused frame "too soft"
+    (a low-contrast room scored 21.7) while passing a badly out-of-focus close-up (79.5).
+    Laplacian variance tracks scene contrast as much as focus, so it cannot gate anything.
+    Driving it to zero here must not change the verdict.
+    """
+    import dume.focus as focus
+
+    assert feature_count(textured) >= FEATURES_ENOUGH
+    monkeypatch.setattr(focus, "sharpness", lambda _f: 0.0)
+    assert any("USABLE" in ln for ln in focus_lines(textured))

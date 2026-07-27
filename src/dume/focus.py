@@ -11,18 +11,22 @@ from __future__ import annotations
 
 import numpy as np
 
-#: Laplacian variance below this reads as blurry; a well-focused textured scene runs far above.
-SHARP_ENOUGH = 300.0
 #: ORB yield below this makes sparse reconstruction hopeless — there is nothing to match.
+#: This is the *only* absolute threshold here, because it measures the thing we actually need:
+#: how many points the matcher will have to work with.
 FEATURES_ENOUGH = 300
 
 
 def sharpness(frame: np.ndarray) -> float:
-    """Variance of the Laplacian — the standard no-reference focus measure.
+    """Variance of the Laplacian — a *relative* focus signal only.
 
     A blurred image has little high-frequency content, so its second derivative is small
-    everywhere and its variance collapses. Scene-dependent (a blank wall scores low however
-    sharp the lens), which is fine for *relative* comparison while turning a focus ring.
+    everywhere and its variance collapses. But the value depends as much on the scene as on
+    the lens: a well-focused wall of flat paint scores lower than a badly-focused close-up of
+    a keyboard. Only compare it against itself, on one fixed scene, while turning the barrel.
+
+    Never threshold it. A sharp frame of a low-contrast room measured 21.7 here while a
+    genuinely out-of-focus desk shot measured 79.5 — an absolute cutoff gets that backwards.
     """
     import cv2
 
@@ -48,12 +52,10 @@ def feature_count(frame: np.ndarray, max_features: int = 2000) -> int:
 
 
 def focus_lines(frame: np.ndarray) -> list[str]:
-    """Overlay text reporting both metrics and whether they clear the usable thresholds."""
-    sharp = sharpness(frame)
+    """Overlay text: feature count decides usable/not, sharpness is shown for hill-climbing."""
     feats = feature_count(frame)
-    verdict = "OK" if sharp >= SHARP_ENOUGH and feats >= FEATURES_ENOUGH else "TOO SOFT"
     return [
-        f"sharpness {sharp:7.1f}  (want >{SHARP_ENOUGH:.0f})",
-        f"features  {feats:7d}  (want >{FEATURES_ENOUGH})",
-        f"focus: {verdict}",
+        f"features  {feats:7d}  (need >{FEATURES_ENOUGH} to reconstruct)",
+        f"sharpness {sharpness(frame):7.1f}  (relative only — maximise, don't compare)",
+        f"focus: {'USABLE' if feats >= FEATURES_ENOUGH else 'TOO SOFT'}",
     ]
