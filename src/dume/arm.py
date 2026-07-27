@@ -13,10 +13,13 @@ The first five are degrees; the sixth (gripper) is normalised 0..100.
 from __future__ import annotations
 
 import glob
+import logging
 import os
 from typing import Callable, Protocol, runtime_checkable
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # macOS exposes the SO-101's USB-serial bridge as /dev/cu.usbmodem<serial>. The trailing serial
 # can change across reflashes/ports, so we glob rather than hard-code the suffix.
@@ -114,9 +117,21 @@ class SO101Arm:
             self._robot.bus.write("P_Coefficient", "gripper", int(self._gripper_servo_p))
 
     def disconnect(self) -> None:
-        if self._robot is not None:
-            self._robot.disconnect()
-            self._robot = None
+        """Release the robot, never raising over the top of a live exception.
+
+        lerobot's ``disconnect`` writes ``Torque_Enable = 0`` to every motor, which fails if
+        the bus has already gone dark — exactly the situation a fault leaves behind. Letting
+        that propagate replaces the *real* exception with a ConnectionError from the shutdown
+        path, which is how a genuine fault was lost on 2026-07-25. The failure is logged and
+        swallowed, and ``_robot`` is cleared either way so a retry can't reuse a dead handle.
+        """
+        robot, self._robot = self._robot, None
+        if robot is None:
+            return
+        try:
+            robot.disconnect()
+        except Exception as exc:  # noqa: BLE001 — cleanup must not mask the original error
+            logger.warning("Arm disconnect failed (torque may still be enabled): %s", exc)
 
     def is_calibrated(self) -> bool:
         return bool(self._robot and self._robot.is_calibrated)
