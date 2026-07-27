@@ -7,9 +7,11 @@ import numpy as np
 import pytest
 
 from dume.camera import (
+    CAMERA_FRAME,
     T_CAM_MOUNT,
     CameraIntrinsics,
     camera_pose_from_fk,
+    mount_from_urdf,
     project_points,
     world_to_camera,
 )
@@ -20,6 +22,37 @@ from dume.poses import HOME_JOINTS
 @pytest.fixture(scope="module")
 def kin():
     return Kinematics()
+
+
+def test_mount_comes_from_the_urdf_camera_frame():
+    """T_CAM_MOUNT is read from the URDF, not hardcoded — one source of truth.
+
+    A hardcoded copy silently diverges from camera_optical_link the moment the frame is
+    re-measured, and a wrong mount is invisible: the cloud just sits in the wrong place.
+    """
+    assert np.allclose(T_CAM_MOUNT, mount_from_urdf())
+
+
+def test_mount_matches_fk_through_the_urdf_chain(kin):
+    """FK walked to camera_optical_link equals gripper FK composed with the mount.
+
+    This is the property the flown-extrinsics trick depends on; if the URDF joint and the
+    mount transform ever disagree, triangulation is quietly wrong.
+    """
+    kcam = Kinematics(ee_frame=CAMERA_FRAME, joint_names=kin.joint_names)
+    assert np.allclose(kcam.fk(HOME_JOINTS), kin.fk(HOME_JOINTS) @ T_CAM_MOUNT, atol=1e-9)
+
+
+def test_mount_from_urdf_raises_clearly_when_frame_absent(tmp_path):
+    """Re-exporting the URDF from onshape-to-robot drops the hand-authored camera frame.
+
+    Failing loudly beats falling back to a guess: a silently wrong extrinsic produces a
+    plausible-looking cloud in the wrong place.
+    """
+    stub = tmp_path / "no_camera.urdf"
+    stub.write_text('<?xml version="1.0"?><robot name="x"><link name="base_link"/></robot>')
+    with pytest.raises(ValueError, match=CAMERA_FRAME):
+        mount_from_urdf(stub)
 
 
 def test_intrinsics_from_fov_centre_and_K():

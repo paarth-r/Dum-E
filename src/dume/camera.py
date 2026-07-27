@@ -17,7 +17,9 @@ Conventions:
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -27,16 +29,43 @@ from dume import geometry as g
 # ---------------------------------------------------------------------------
 # Mount extrinsic (gripper_frame_link -> camera optical frame).
 #
-# Physical mount (per Paarth): the Arducam sits directly under the hole in the claw, looking
-# orthogonal to the wrist axis, along the gripper's reach. Empirically (FK at HOME) the gripper
-# approach direction is gripper_frame_link's +Z and the wrist axis is its +Y — so the optical
-# +Z (OpenCV: +z forward) aligns with gripper +Z and the rotation is IDENTITY (optical axes ==
-# gripper_frame axes). The camera is a 38 mm case glued centred into the claw hole looking out
-# along the approach, so it is laterally centred (x=y=0) and the optical centre sits ~one case-
-# depth (~20 mm) behind the hole along -Z. Final image-roll + the exact offset need hardware
-# calibration. A fixed `camera_optical_link` in the URDF could own this instead (see notes).
+# Read from the URDF's `camera_optical_link` rather than hardcoded here, so the frame has
+# exactly one definition. A duplicated constant diverges the moment the mount is re-measured,
+# and the divergence is invisible: nothing crashes, the point cloud just lands in the wrong
+# place. See that link in urdf/so101_new_calib.urdf for how the numbers were derived.
+#
+# The path is computed locally rather than imported from `kinematics`, which would drag placo
+# and lerobot into this otherwise-pure-geometry module.
 # ---------------------------------------------------------------------------
-T_CAM_MOUNT: np.ndarray = g.make_transform([0.0, 0.0, -0.02], np.eye(3))
+DEFAULT_URDF = Path(__file__).resolve().parents[2] / "urdf" / "so101_new_calib.urdf"
+CAMERA_FRAME = "camera_optical_link"
+
+
+def mount_from_urdf(urdf_path=DEFAULT_URDF, child: str = CAMERA_FRAME) -> np.ndarray:
+    """Return the 4x4 transform of the fixed joint whose child link is ``child``.
+
+    Raises rather than falling back to a default: the camera frame is hand-authored, and
+    re-running onshape-to-robot silently drops it. A missing frame must be loud, because a
+    guessed extrinsic produces a plausible-looking reconstruction that is simply wrong.
+    """
+    root = ET.parse(urdf_path).getroot()
+    for joint in root.findall("joint"):
+        link = joint.find("child")
+        if link is None or link.get("link") != child:
+            continue
+        origin = joint.find("origin")
+        xyz = (origin.get("xyz") if origin is not None else None) or "0 0 0"
+        rpy = (origin.get("rpy") if origin is not None else None) or "0 0 0"
+        return g.transform_from_pos_rpy(
+            [float(v) for v in xyz.split()], [float(v) for v in rpy.split()]
+        )
+    raise ValueError(
+        f"No fixed joint with child link {child!r} in {urdf_path}. The end-effector camera "
+        "frame is hand-authored; re-exporting the URDF from onshape-to-robot removes it."
+    )
+
+
+T_CAM_MOUNT: np.ndarray = mount_from_urdf()
 
 
 @dataclass(frozen=True)
