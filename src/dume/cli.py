@@ -5,6 +5,7 @@
     dume axes                   print live controller axes/buttons (verify mapping)
     dume save-pose [--name N]   hand-pose the arm, hit Enter to save its joints (default: start)
     dume run [--dry-run]        Xbox teleoperation (velocity jog + pose mode); --view adds camera
+    dume view                   live camera view only (no arm) — use this to focus the lens
     dume scan [--poses A B]     walk saved setpoints, streaming the end-effector camera
     dume goto X Y Z R P Y       move to an absolute pose (metres, radians)
 """
@@ -175,6 +176,39 @@ def _camera_tick(view, camera, extra_lines=None):
         return False if key != 255 else None  # 255 == no key (waitKey -1 masked)
 
     return tick
+
+
+def cmd_view(args) -> int:
+    """Camera-only live viewer. No arm, no motion — stays open until you quit.
+
+    Exists because focusing the M12 lens is a blind adjustment: it needs a window that simply
+    persists while you turn the barrel. ``scan`` renders during motion and at stops, so it is
+    the wrong tool for this — with ``--dry-run`` the sim arm teleports and there is nothing to
+    render at all.
+    """
+    from dume.arducam import ArduCamSource
+    from dume.focus import focus_lines
+    from dume.liveview import LiveView
+
+    with ArduCamSource(device=args.device) as camera, LiveView("dume view") as view:
+        print(f"Camera on device {camera.device} "
+              f"({camera.intrinsics.width}x{camera.intrinsics.height}, intrinsics UNCALIBRATED)")
+        print("Turn the lens barrel to maximise the numbers. 'q' or Esc to quit.")
+        best = 0.0
+        while True:
+            frame = camera.capture()
+            lines = [] if args.no_metrics else focus_lines(frame.rgb)
+            if lines:
+                # Track the best seen so you can tell you've walked past the optimum.
+                from dume.focus import sharpness
+
+                best = max(best, sharpness(frame.rgb))
+                lines.append(f"best seen {best:7.1f}")
+            key = view.show(frame.rgb, lines)
+            if key in (ord("q"), 27):
+                break
+    print("Closed.")
+    return 0
 
 
 def cmd_scan(args) -> int:
@@ -478,6 +512,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--no-start-pose", action="store_true", help="don't move to a start pose on launch")
     pr.add_argument("--view", action="store_true", help="show the end-effector camera feed")
 
+    pv = sub.add_parser("view", help="live end-effector camera view (no arm) — for focusing")
+    pv.add_argument("--device", type=int, help="explicit camera index (default: probe for 1280x800)")
+    pv.add_argument("--no-metrics", action="store_true", help="hide the focus readout")
+
     psc = sub.add_parser("scan", help="walk saved setpoints, streaming the end-effector camera")
     psc.add_argument("--poses", nargs="+", help="setpoint names to visit (default: all saved)")
     psc.add_argument("--file", help="JSON store path (default: ~/.dume/joint_poses.json)")
@@ -514,6 +552,7 @@ def main(argv=None) -> int:
         "axes": cmd_axes,
         "save-pose": cmd_save_pose,
         "run": cmd_run,
+        "view": cmd_view,
         "scan": cmd_scan,
         "goto": cmd_goto,
         "sim": cmd_sim,

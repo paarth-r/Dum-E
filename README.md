@@ -67,11 +67,19 @@ The claw carries an **Arducam UC-844** (1280×800 global-shutter mono, OV9281). 
 lives in the URDF as `camera_optical_link`, so FK walks straight to the camera.
 
 ```bash
+.venv/bin/dume view                    # camera only, no arm — use this to focus the lens
 .venv/bin/dume run --view              # teleop with the live camera feed
 .venv/bin/dume scan                    # visit every saved setpoint, streaming the feed
 .venv/bin/dume scan --poses a b c      # visit specific setpoints, in order
 .venv/bin/dume scan --save ~/scans/01  # also write each stop's frame + measured pose
 ```
+
+`view` touches no hardware but the camera and stays open until you press `q`. It overlays a
+live focus readout — Laplacian variance and ORB keypoint count — so setting the M12 lens is
+hill-climbing on a number rather than squinting at a blurry picture. Turn the barrel until
+both stop rising; it also tracks the best value seen so you can tell when you've gone past it.
+Feature count is the one that matters: sparse reconstruction needs hundreds of keypoints per
+frame, and an out-of-focus lens yields single digits.
 
 `scan` walks the arm through saved setpoints (see [`docs/setpoints.md`](docs/setpoints.md)),
 pausing at each to capture a frame paired with the camera's pose in the **arm base frame**.
