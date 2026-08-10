@@ -113,3 +113,27 @@ def test_trim_idle_all_still_keeps_a_frame():
     frames = np.tile(np.arange(6, dtype=float), (30, 1))
     trimmed = trim_idle(frames)
     assert len(trimmed) >= 1
+
+
+def test_out_of_limit_macro_still_plays_and_returns_teleop(dume):
+    """Hand-recorded frames can sit past the software joint limits (torque was off). The
+    goto-start phase must not wedge on an unreachable target, and teleop must come back."""
+    lim = dume.controller.joint_limits
+    frames = np.tile(dume.get_joints().copy(), (20, 1))
+    frames[:, 1] = np.linspace(lim[1, 0] - 10.0, lim[1, 0] - 8.0, 20)  # beyond the limit
+    macro = Macro(name="pushed", key="9", dt=dume.config.dt, frames=frames)
+    play_macro(dume, macro)
+    assert dume.controller._joint_target is None  # teleop branch must be live again
+    before = dume.get_joints().copy()
+    for _ in range(30):
+        dume.controller.step(Command(lin=np.array([0.0, 1.0, 0.0]), rt=1.0))
+    assert not np.allclose(dume.get_joints()[:5], before[:5], atol=0.5)  # sticks work
+
+
+def test_goto_joints_clamps_target_and_arrives(dume):
+    lim = dume.controller.joint_limits
+    target = dume.get_joints().copy()
+    target[1] = lim[1, 0] - 10.0  # 10 deg past the shoulder_lift limit
+    dume.goto_joints(target, timeout=10.0)
+    assert dume.controller._joint_target is None  # arrived at the clamped target, no timeout
+    assert dume.get_joints()[1] == pytest.approx(lim[1, 0], abs=0.6)

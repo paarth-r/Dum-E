@@ -130,11 +130,17 @@ def play_macro(dume, macro: Macro, *, abort=None) -> bool:
     """
     from dume.arm import SO101Arm
 
-    frames = macro.frames
     ctl = dume.controller
+    # Hand-recorded frames can sit past the software limits (torque was off during the
+    # demonstration); clamp every frame so playback never commands what teleop couldn't.
+    lim = ctl.joint_limits
+    frames = macro.frames.copy()
+    frames[:, :5] = np.clip(frames[:, :5], lim[:5, 0], lim[:5, 1])
+    frames[:, 5] = np.clip(frames[:, 5], 0.0, 100.0)
     ok = True
 
     dume.goto_joints(frames[0], on_tick=(lambda: not abort()) if abort else None)
+    ctl._joint_target = None  # never let a stale joint-move target outlive the goto phase
     if abort and ctl._joint_target is None and not np.allclose(ctl.q_ref[:5], frames[0][:5], atol=1.0):
         ok = False  # goto was aborted mid-move
 

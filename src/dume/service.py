@@ -127,7 +127,13 @@ class DumeArm:
         which is the abort path for scripted motion: the arm holds its current commanded
         position rather than continuing to a target the user has decided against.
         """
-        target = np.asarray(joints, dtype=float)
+        target = np.asarray(joints, dtype=float).copy()
+        # Clamp into the software limits: an out-of-limit target (e.g. a hand-recorded pose
+        # pushed past a limit while torque was off) is otherwise unreachable — the commanded
+        # joints clamp every tick, the 0.5 deg arrival check never passes, and the move eats
+        # its whole timeout with _joint_target left set, which locks out teleop.
+        lim = self.controller.joint_limits
+        target[:5] = np.clip(target[:5], lim[:5, 0], lim[:5, 1])
         self.controller.gripper_cmd = float(target[5])
         self.controller._joint_target = target.copy()
         if wait:
