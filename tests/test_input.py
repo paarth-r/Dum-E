@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from dume.input_xbox import apply_deadzone, apply_expo, combine_z, shape_axis
 
@@ -38,3 +39,30 @@ def test_combine_z_stick_and_clicks():
     assert combine_z(0.5, False, False) == 0.5  # stick only
     assert combine_z(0.8, True, False) == 1.0  # stick + click, clamped
     assert combine_z(0.0, True, True) == 0.0  # both clicks cancel
+
+
+def test_trigger_latch_ignores_phantom_zero():
+    from dume.input_xbox import latch_trigger
+
+    # SDL reports 0.0 for an axis that has never produced an event; raw 0.0 would map to a
+    # phantom half-pull. Until the trigger is seen at rest (near -1), report released.
+    v, seen = latch_trigger(0.0, False, deadzone=0.05)
+    assert v == 0.0 and seen is False
+
+
+def test_trigger_latch_arms_at_rest_then_tracks():
+    from dume.input_xbox import latch_trigger
+
+    v, seen = latch_trigger(-1.0, False, deadzone=0.05)  # trigger reports its rest position
+    assert v == 0.0 and seen is True
+    v, seen = latch_trigger(0.0, True, deadzone=0.05)  # now 0.0 is a genuine half-pull
+    assert v == pytest.approx(0.5) and seen is True
+    v, seen = latch_trigger(1.0, True, deadzone=0.05)
+    assert v == pytest.approx(1.0)
+
+
+def test_trigger_latch_applies_deadzone_when_live():
+    from dume.input_xbox import latch_trigger
+
+    v, _ = latch_trigger(-0.95, True, deadzone=0.05)  # 0.025 normalised, under deadzone
+    assert v == 0.0

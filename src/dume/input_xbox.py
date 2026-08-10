@@ -59,6 +59,18 @@ def shape_axis(v: float, dz: float, expo: float) -> float:
     return apply_expo(apply_deadzone(v, dz), expo)
 
 
+def latch_trigger(raw: float, seen: bool, *, deadzone: float) -> tuple[float, bool]:
+    """Trigger axis -> [0, 1], guarding SDL's init quirk: an axis reports exactly 0.0 until
+    its first real event, and raw 0.0 maps to a phantom half-pull (the gripper "initialises"
+    half open). Until the trigger has been seen at rest (raw near -1), report released."""
+    if not seen:
+        if raw > -0.5:
+            return 0.0, False
+        seen = True
+    n = float(np.clip((raw + 1.0) / 2.0, 0.0, 1.0))
+    return (0.0 if n < deadzone else n), seen
+
+
 def combine_z(stick_z: float, l3: bool, r3: bool) -> float:
     """Z velocity = right-stick Y (already shaped, +up) plus stick clicks (L3 up, R3 down),
     clamped to [-1, 1]."""
@@ -74,6 +86,7 @@ class XboxController:
         self.joystick_index = joystick_index
         self._js = None
         self._prev_buttons: dict[int, bool] = {}
+        self._trigger_seen: dict[int, bool] = {}
 
     def connect(self) -> None:
         import os
@@ -116,10 +129,12 @@ class XboxController:
         return cur and not prev
 
     def _trigger(self, idx: int) -> float:
-        # Triggers rest near -1, full press near +1 -> normalise to [0, 1].
-        n = (self._axis(idx) + 1.0) / 2.0
-        n = float(np.clip(n, 0.0, 1.0))
-        return 0.0 if n < self.map.trigger_deadzone else n
+        # Triggers rest near -1, full press near +1 -> [0, 1], latched against SDL's
+        # zero-until-first-event init (see latch_trigger).
+        v, self._trigger_seen[idx] = latch_trigger(
+            self._axis(idx), self._trigger_seen.get(idx, False), deadzone=self.map.trigger_deadzone
+        )
+        return v
 
     def poll(self) -> Command:
         import pygame
