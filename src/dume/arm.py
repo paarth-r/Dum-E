@@ -115,6 +115,10 @@ class SO101Arm:
         # 16) so the gripper tracks the trigger snappily. Gripper only; arm joints stay gentle.
         if self._gripper_servo_p is not None:
             self._robot.bus.write("P_Coefficient", "gripper", int(self._gripper_servo_p))
+        # Clear the gripper's profile-velocity cap (0 = move at full speed). lerobot never writes
+        # this register, so whatever value is stored in the servo silently throttles the jaw; the
+        # SQUEEZE command path is an absolute 1:1 trigger map, so any lag here is pure servo.
+        self._robot.bus.write("Goal_Velocity", "gripper", 0)
 
     def disconnect(self) -> None:
         """Release the robot, never raising over the top of a live exception.
