@@ -91,14 +91,14 @@ class ControllerConfig:
     loop_hz: float = 50.0
 
     # Velocity jog feel
-    max_linear_vel: float = 0.12  # m/s at full stick (positions the wrist pivot)
-    wrist_speed: float = 80.0  # deg/s for D-pad wrist_flex (pitch) / wrist_roll (roll) jog
+    max_linear_vel: float = 0.22  # m/s at full stick (positions the wrist pivot)
+    wrist_speed: float = 120.0  # deg/s for D-pad wrist_flex (pitch) / wrist_roll (roll) jog
     max_angular_vel: float = 1.2  # rad/s — used by programmatic goto orientation only
-    vel_ema_alpha: float = 0.35  # velocity low-pass (0..1, higher = snappier)
+    vel_ema_alpha: float = 0.50  # velocity low-pass (0..1, higher = snappier)
 
     # Smoothing / safety
     joint_slew_deg: float = 6.0  # max commanded joint change per tick (per joint, velocity cap)
-    joint_jerk_deg: float = 2.0  # max change in per-tick joint velocity (accel cap; smooths reversals)
+    joint_jerk_deg: float = 3.5  # max change in per-tick joint velocity (accel cap; smooths reversals)
     workspace: AxisBox = field(default_factory=AxisBox)
 
     # Velocity-jog position IK: damped least-squares over pan/lift/elbow (smoother + faster than
@@ -132,7 +132,7 @@ class ControllerConfig:
     # Gripper (the gripper motor is normalised 0..100, not degrees)
     gripper_open: float = 95.0
     gripper_closed: float = 5.0
-    gripper_speed: float = 200.0  # units/s (0..100 scale) at full trigger, RATE mode
+    gripper_speed: float = 300.0  # units/s (0..100 scale) at full trigger, RATE mode
     gripper_mode_default: GripperMode = GripperMode.SQUEEZE  # X toggles to RATE
     # STS3215 position-loop P gain for the gripper motor, applied on connect. lerobot sets every
     # motor to 16 (down from firmware default 32) "to avoid shakiness" — raising it made the
@@ -141,7 +141,7 @@ class ControllerConfig:
     gripper_servo_p: int | None = None
 
     # Planner (goto / pose moves)
-    plan_max_linear_vel: float = 0.10  # m/s
+    plan_max_linear_vel: float = 0.15  # m/s
     plan_max_linear_acc: float = 0.30  # m/s^2
     plan_max_angular_vel: float = 1.0  # rad/s
     plan_max_angular_acc: float = 3.0  # rad/s^2
