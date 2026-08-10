@@ -74,4 +74,5 @@ class KeyboardController:
             rt=rt,
             toggle_mode=tapped(ord("m")),
             gripper_mode_toggle=tapped(ord("g")),
+            turbo=down(p.B3G_SHIFT),  # RB parity: hold Shift for turbo
         )

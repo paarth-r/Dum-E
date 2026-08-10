@@ -214,3 +214,45 @@ def test_mode_toggle(controller):
     assert controller.mode is ControlMode.POSE
     controller.step(Command(toggle_mode=True))
     assert controller.mode is ControlMode.VELOCITY
+
+
+def test_turbo_translates_faster_than_normal(kin, tmp_path):
+    # Jog +Y (pan-dominated): HOME sits near full extension, so +/-X either parks on the
+    # workspace boundary or rides the joint slew cap — both runs come out identical and the
+    # speed difference is invisible. Laterally the pan joint has big Cartesian headroom.
+    def travel(turbo: bool) -> float:
+        arm = SimArm(initial_joints=HOME_JOINTS.copy())
+        ctl = Controller(ControllerConfig(), arm, kin, PoseStore(tmp_path / f"p{turbo}.json"))
+        ctl.start()
+        p0 = g.position_of(kin.fk(arm.read_joints()))
+        for _ in range(25):
+            ctl.step(Command(lin=np.array([0.0, 1.0, 0.0]), turbo=turbo))
+        return g.position_of(kin.fk(arm.read_joints()))[1] - p0[1]
+
+    slow, fast = travel(False), travel(True)
+    assert fast > slow * 1.3  # well under turbo_scale; allows smoothing transients and leash lag
+
+
+def test_turbo_wrist_jogs_faster(kin, tmp_path):
+    def swept(turbo: bool) -> float:
+        arm = SimArm(initial_joints=HOME_JOINTS.copy())
+        ctl = Controller(ControllerConfig(), arm, kin, PoseStore(tmp_path / f"w{turbo}.json"))
+        ctl.start()
+        start = arm.read_joints()[3]
+        for _ in range(20):
+            ctl.step(Command(wrist_pitch=1.0, turbo=turbo))
+        return abs(arm.read_joints()[3] - start)
+
+    assert swept(True) > swept(False) * 1.3
+
+
+def test_turbo_still_respects_slew_limit(controller):
+    cfg = controller.config
+    prev = controller.arm.read_joints().copy()
+    for _ in range(60):
+        controller.step(
+            Command(lin=np.array([1.0, 1.0, 1.0]), wrist_pitch=1.0, wrist_roll=1.0, turbo=True)
+        )
+        now = controller.arm.read_joints()
+        assert np.all(np.abs(now[:5] - prev[:5]) <= cfg.joint_slew_deg + 1e-6)
+        prev = now.copy()

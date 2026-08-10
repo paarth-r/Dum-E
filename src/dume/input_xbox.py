@@ -13,6 +13,7 @@ Semantic mapping (the only bindings):
 - RT (+ LT)       -> gripper (SQUEEZE: released = closed, squeezed = open; RATE: lt opens, rt closes)
 - X               -> toggle gripper mode (squeeze <-> rate)
 - B               -> toggle velocity / pose (freeze) mode
+- RB (held)       -> turbo: multiplies translation and wrist-jog speed
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ class Command:
     rt: float = 0.0  # right trigger position [0, 1]
     toggle_mode: bool = False  # B: velocity <-> freeze
     gripper_mode_toggle: bool = False  # X: squeeze <-> rate
+    turbo: bool = False  # RB held: speed multiplier on translation and wrist jog
 
 
 def apply_deadzone(v: float, dz: float) -> float:
@@ -155,6 +157,7 @@ class XboxController:
             rt=self._trigger(m.axis_rt),
             toggle_mode=self._rising(m.btn_b),
             gripper_mode_toggle=self._rising(m.btn_x),
+            turbo=self._button(m.btn_rb),
         )
 
     def disconnect(self) -> None:

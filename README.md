@@ -56,7 +56,7 @@ It doubles as the teleop-feel test rig and the cockpit for recording demonstrati
 .venv/bin/dume sim --noise 0.5    # inject servo-feedback noise to feel the smoothing
 ```
 
-- **Drive:** keyboard (`WASD` = X/Y, `R`/`F` = Z, arrows = wrist, `O`/`C` = gripper, `M` = mode) or an Xbox pad.
+- **Drive:** keyboard (`WASD` = X/Y, `R`/`F` = Z, arrows = wrist, `O`/`C` = gripper, `M` = mode, hold `Shift` = turbo) or an Xbox pad (hold `RB` = turbo).
 - **Grab:** a dynamic box rests on the ground; close the gripper near it to pick it up, open to drop it.
 - **Camera:** a live end-effector RGB/depth feed with object detection.
 - **Navigate:** OnShape-style — left-drag orbit, `Ctrl`+left-drag pan, scroll to zoom.

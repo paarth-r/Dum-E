@@ -217,15 +217,20 @@ class Controller:
         ref = self.q_ref  # slew/seed from the commanded reference, never the noisy measurement
         # Wrist pivot position: EMA-smoothed velocity integrated into the target, clamped to the
         # workspace, then leashed to the achieved pivot so it can't wind up far past reach.
-        desired_lin = cmd.lin * c.max_linear_vel
+        # Turbo (RB held) multiplies the commanded speeds; slew/jerk caps still bound the output.
+        speed = c.turbo_scale if cmd.turbo else 1.0
+        desired_lin = cmd.lin * c.max_linear_vel * speed
         a = c.vel_ema_alpha
         self._filt_lin = a * desired_lin + (1 - a) * self._filt_lin
         candidate = c.workspace.clamp(self._pivot_target + self._filt_lin * dt)
         achieved_pivot = self.kin_pos.fk(ref[:3])[:3, 3]  # where the arm actually is now
         lead = candidate - achieved_pivot
         dist = float(np.linalg.norm(lead))
-        if dist > c.pivot_leash_m:  # anti-lockout: bound how far the target leads reality
-            candidate = achieved_pivot + lead * (c.pivot_leash_m / dist)
+        # Anti-lockout: bound how far the target leads reality. The leash is also the de facto
+        # speed cap (the arm chases a target at most one leash ahead), so turbo scales it too.
+        leash = c.pivot_leash_m * speed
+        if dist > leash:
+            candidate = achieved_pivot + lead * (leash / dist)
         self._pivot_target = candidate
         # Damped least-squares position IK over pan/lift/elbow, seeded from the reference, with
         # joint-limit avoidance so it can't fold a joint into its limit and lock there.
@@ -243,14 +248,14 @@ class Controller:
         # Wrist joints jogged directly (D-pad), rate-limited by wrist_speed, clamped to limits.
         self.wrist_flex_cmd = float(
             np.clip(
-                self.wrist_flex_cmd + cmd.wrist_pitch * c.wrist_speed * dt,
+                self.wrist_flex_cmd + cmd.wrist_pitch * c.wrist_speed * speed * dt,
                 self.joint_limits[3, 0],
                 self.joint_limits[3, 1],
             )
         )
         self.wrist_roll_cmd = float(
             np.clip(
-                self.wrist_roll_cmd + cmd.wrist_roll * c.wrist_speed * dt,
+                self.wrist_roll_cmd + cmd.wrist_roll * c.wrist_speed * speed * dt,
                 self.joint_limits[4, 0],
                 self.joint_limits[4, 1],
             )

@@ -64,6 +64,10 @@ class XboxMap:
     btn_x: int = 2  # toggle gripper mode (squeeze <-> rate)
     btn_y: int = 3  # (free)
 
+    # Bumpers: RB held = turbo (speed multiplier). SDL Xbox layout = LB 9, RB 10 — verify
+    # with `dume axes` if the driver maps differently.
+    btn_rb: int = 10  # hold for turbo
+
     # Stick clicks (L3/R3): nudge Z up/down. SDL indices vary by driver — verify with `dume axes`.
     btn_l3: int = 7  # left-stick click -> Z up
     btn_r3: int = 8  # right-stick click -> Z down
@@ -95,6 +99,7 @@ class ControllerConfig:
     wrist_speed: float = 120.0  # deg/s for D-pad wrist_flex (pitch) / wrist_roll (roll) jog
     max_angular_vel: float = 1.2  # rad/s — used by programmatic goto orientation only
     vel_ema_alpha: float = 0.50  # velocity low-pass (0..1, higher = snappier)
+    turbo_scale: float = 2.5  # RB held: multiplies max_linear_vel, wrist_speed, and the pivot leash
 
     # Smoothing / safety
     joint_slew_deg: float = 6.0  # max commanded joint change per tick (per joint, velocity cap)
