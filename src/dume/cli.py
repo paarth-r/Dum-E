@@ -427,16 +427,34 @@ def cmd_run(args) -> int:
         if macros.items():
             bound = "  ".join(f"[{k}] {m.name}" for k, m in macros.items())
             print(f"Macros: {bound}  (press the digit to play; space aborts mid-macro)")
+        print("Space: toggle a limp gripper (torque off — position the jaw by hand; space or a macro re-grips)")
         try:
             with contextlib.ExitStack() as stack:
                 on_tick = _status_printer()
                 keys = stack.enter_context(RawKeys())
+                gripper_limp = False
+
+                def engage_gripper_if_limp():
+                    nonlocal gripper_limp
+                    if gripper_limp:
+                        arm.arm.engage_gripper()
+                        gripper_limp = False
 
                 def poll():
+                    nonlocal gripper_limp
                     k = keys.get()
-                    if k is not None and k.isdigit():
+                    if k == " ":
+                        if gripper_limp:
+                            engage_gripper_if_limp()
+                            print("\nGripper re-engaged (following the trigger).")
+                        else:
+                            arm.arm.relax_gripper()
+                            gripper_limp = True
+                            print("\nGripper limp — space re-grips.")
+                    elif k is not None and k.isdigit():
                         macro = macros.get(k)
                         if macro is not None:
+                            engage_gripper_if_limp()
                             print(f"\nMacro '{macro.name}' [{k}] — space aborts.")
                             done = play_macro(arm, macro, abort=lambda: keys.get() == " ")
                             print("Macro done." if done else "Macro aborted — holding here.")

@@ -459,6 +459,12 @@ class PyBulletArm:
     def engage(self) -> None:
         """Torque returns implicitly on the next ``write_joints`` (position control re-asserts)."""
 
+    def relax_gripper(self) -> None:
+        """No-op: ``write_joints`` re-asserts position control every tick in the sim."""
+
+    def engage_gripper(self) -> None:
+        """No-op: see ``relax_gripper``."""
+
     def relax(self) -> None:
         """Cut motor torque (velocity control at zero force) so the arm can be moved / sags."""
         for idx in self._idx.values():

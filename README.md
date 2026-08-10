@@ -61,6 +61,10 @@ During `run`, pressing a bound digit moves the arm to the macro's start pose, re
 recording in its original timing, then holds the end pose and hands you back the sticks —
 space aborts a macro mid-flight and holds wherever it is.
 
+Outside a macro, space toggles a **limp gripper**: torque is cut on the jaw only so you can
+position it (or the object) by hand while the arm keeps holding; space re-grips, and starting
+a macro re-grips automatically. In squeeze mode the jaw then returns to the trigger position.
+
 ## Simulation (`dume sim`)
 
 A PyBullet harness that runs the exact control stack over a kinematic arm — no hardware needed.

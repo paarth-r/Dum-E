@@ -75,6 +75,8 @@ class ArmIO(Protocol):
     def write_joints(self, joints) -> None: ...
     def relax(self) -> None: ...
     def engage(self) -> None: ...
+    def relax_gripper(self) -> None: ...
+    def engage_gripper(self) -> None: ...
 
 
 class SO101Arm:
@@ -158,6 +160,15 @@ class SO101Arm:
         """Restore motor torque after ``relax`` (the arm holds wherever it is)."""
         self._robot.bus.enable_torque()
 
+    def relax_gripper(self) -> None:
+        """Cut torque on the gripper motor only — the jaw goes limp, the arm keeps holding.
+        Goal positions streamed while torque is off are ignored by the servo."""
+        self._robot.bus.disable_torque("gripper")
+
+    def engage_gripper(self) -> None:
+        """Restore gripper torque; the jaw resumes chasing the streamed goal position."""
+        self._robot.bus.enable_torque("gripper")
+
 
 class SimArm:
     """Kinematic simulation: adopts commanded joints immediately. Powers ``--dry-run``.
@@ -203,3 +214,9 @@ class SimArm:
 
     def relax(self) -> None:
         """No-op in simulation — there's no torque to disable."""
+
+    def relax_gripper(self) -> None:
+        """No-op in simulation."""
+
+    def engage_gripper(self) -> None:
+        """No-op in simulation."""
