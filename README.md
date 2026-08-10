@@ -45,6 +45,22 @@ positions to `~/.dume/joint_poses.json` (readable `{motor: value}` JSON) when yo
 `start` is just one named setpoint — you can save and recall as many as you like. See
 [`docs/setpoints.md`](docs/setpoints.md) for full setpoint usage and flags.
 
+## Macros (`dume record`)
+
+Record a whole motion by hand and replay it during teleop. `record` (or `./record-macro.sh`)
+prompts for a name and a digit keybind (0-9), counts down 3-2-1, cuts torque so the arm goes
+limp, and samples the measured joints at 50 Hz while you demonstrate the motion — hit space to
+stop the take. Macros persist in `~/.dume/macros.json`.
+
+```bash
+./record-macro.sh                        # prompts: name, keybind, 3-2-1, record until space
+.venv/bin/dume run                       # press the digit to play it back
+```
+
+During `run`, pressing a bound digit moves the arm to the macro's start pose, replays the
+recording in its original timing, then holds the end pose and hands you back the sticks —
+space aborts a macro mid-flight and holds wherever it is.
+
 ## Simulation (`dume sim`)
 
 A PyBullet harness that runs the exact control stack over a kinematic arm — no hardware needed.

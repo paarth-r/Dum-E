@@ -456,6 +456,9 @@ class PyBulletArm:
         for _ in range(self._substeps):
             p.stepSimulation(physicsClientId=self._client)
 
+    def engage(self) -> None:
+        """Torque returns implicitly on the next ``write_joints`` (position control re-asserts)."""
+
     def relax(self) -> None:
         """Cut motor torque (velocity control at zero force) so the arm can be moved / sags."""
         for idx in self._idx.values():

@@ -74,6 +74,7 @@ class ArmIO(Protocol):
     def read_joints(self) -> np.ndarray: ...
     def write_joints(self, joints) -> None: ...
     def relax(self) -> None: ...
+    def engage(self) -> None: ...
 
 
 class SO101Arm:
@@ -153,6 +154,10 @@ class SO101Arm:
         """Cut motor torque so the arm can be moved by hand (e.g. to capture a pose)."""
         self._robot.bus.disable_torque()
 
+    def engage(self) -> None:
+        """Restore motor torque after ``relax`` (the arm holds wherever it is)."""
+        self._robot.bus.enable_torque()
+
 
 class SimArm:
     """Kinematic simulation: adopts commanded joints immediately. Powers ``--dry-run``.
@@ -192,6 +197,9 @@ class SimArm:
 
     def write_joints(self, joints) -> None:
         self._joints = np.asarray(joints, dtype=float).copy()
+
+    def engage(self) -> None:
+        """No-op in simulation — there's no torque to restore."""
 
     def relax(self) -> None:
         """No-op in simulation — there's no torque to disable."""

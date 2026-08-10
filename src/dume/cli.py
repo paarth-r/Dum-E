@@ -5,6 +5,7 @@
     dume axes                   print live controller axes/buttons (verify mapping)
     dume save-pose [--name N]   hand-pose the arm, hit Enter to save its joints (default: start)
     dume run [--dry-run]        Xbox teleoperation (velocity jog + pose mode); --view adds camera
+    dume record                 record a hand-guided macro onto a digit key (played in `run`)
     dume view                   live camera view only (no arm) — use this to focus the lens
     dume scan [--poses A B]     walk saved setpoints, streaming the end-effector camera
     dume cloud                  sweep the arm, triangulating a live 3D point cloud
@@ -345,8 +346,58 @@ def _write_stop(out_dir: Path, stop) -> None:
     )
 
 
+def cmd_record(args) -> int:
+    """Record a hand-guided macro: name it, bind it to a digit, count down, then the arm
+    goes limp and samples its measured joints every tick until space stops the take."""
+    from dume.macros import Macro, MacroStore, RawKeys, trim_idle
+    from dume.service import DumeArm
+
+    store = MacroStore(args.file) if args.file else MacroStore()
+    name = input("Macro name: ").strip()
+    if not name:
+        print("A macro needs a name.", file=sys.stderr)
+        return 2
+    while True:
+        key = input("Keybind (0-9): ").strip()
+        if len(key) == 1 and key.isdigit():
+            break
+        print("Pick a single digit 0-9.")
+    existing = store.get(key)
+    if existing and input(f"Key {key} holds '{existing.name}'. Overwrite? [y/N] ").lower() != "y":
+        return 0
+
+    with DumeArm() as arm:
+        if not arm.arm.is_calibrated():
+            print("Arm is not calibrated. Run `dume calibrate` first.", file=sys.stderr)
+            return 2
+        for n in (3, 2, 1):
+            print(f"Recording in {n}...")
+            time.sleep(1.0)
+        arm.arm.relax()
+        print("RECORDING — move the arm by hand. Space stops the take.")
+        dt = arm.config.dt
+        frames = []
+        with RawKeys() as keys:
+            while keys.get() != " ":
+                t0 = time.perf_counter()
+                frames.append(arm.arm.read_joints().copy())
+                sleep = dt - (time.perf_counter() - t0)
+                if sleep > 0:
+                    time.sleep(sleep)
+        arm.arm.engage()
+        arm.arm.write_joints(frames[-1])  # hold where the hand left it
+        arm.controller._sync_to_joints(frames[-1].copy())
+        kept = trim_idle(np.array(frames))
+        store.set(Macro(name=name, key=key, dt=dt, frames=kept))
+        cut = (len(frames) - len(kept)) * dt
+        print(f"Saved '{name}' to key {key}: {len(kept)} frames, {len(kept) * dt:.1f}s"
+              + (f" ({cut:.1f}s of idle head/tail trimmed)." if cut > 0.05 else "."))
+    return 0
+
+
 def cmd_run(args) -> int:
     from dume.input_xbox import XboxController
+    from dume.macros import MacroStore, RawKeys, play_macro
     from dume.poses import DEFAULT_JOINT_STORE, JointPoseStore
     from dume.service import DumeArm
 
@@ -368,13 +419,28 @@ def cmd_run(args) -> int:
         xb = XboxController(mapping=arm.config.xbox)
         xb.connect()
         print(f"Controller: {xb.name}")
+        macros = MacroStore(args.macro_file) if args.macro_file else MacroStore()
         print(
             "Left stick: X/Y  |  Right stick: Z (L3 up / R3 down)  |  D-pad: pitch (U/D), roll (L/R)\n"
             "RT: gripper (squeeze)  |  X: gripper mode (squeeze/rate)  |  B: velocity/freeze  |  Ctrl-C: quit"
         )
+        if macros.items():
+            bound = "  ".join(f"[{k}] {m.name}" for k, m in macros.items())
+            print(f"Macros: {bound}  (press the digit to play; space aborts mid-macro)")
         try:
             with contextlib.ExitStack() as stack:
                 on_tick = _status_printer()
+                keys = stack.enter_context(RawKeys())
+
+                def poll():
+                    k = keys.get()
+                    if k is not None and k.isdigit():
+                        macro = macros.get(k)
+                        if macro is not None:
+                            print(f"\nMacro '{macro.name}' [{k}] — space aborts.")
+                            done = play_macro(arm, macro, abort=lambda: keys.get() == " ")
+                            print("Macro done." if done else "Macro aborted — holding here.")
+                    return xb.poll()
                 if args.view:
                     from dume.arducam import ArduCamSource
                     from dume.liveview import LiveView
@@ -388,7 +454,7 @@ def cmd_run(args) -> int:
                         status(tel)
                         view.show(camera.capture().rgb, [])
 
-                arm.run_teleop(xb.poll, on_tick=on_tick)
+                arm.run_teleop(poll, on_tick=on_tick)
         finally:
             xb.disconnect()
             print("\nStopped.")
@@ -573,6 +639,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--start-file", help="JSON store path (default: ~/.dume/joint_poses.json)")
     pr.add_argument("--no-start-pose", action="store_true", help="don't move to a start pose on launch")
     pr.add_argument("--view", action="store_true", help="show the end-effector camera feed")
+    pr.add_argument("--macro-file", help="macro store path (default: ~/.dume/macros.json)")
+
+    prc = sub.add_parser("record", help="record a hand-guided macro onto a digit key (0-9)")
+    prc.add_argument("--file", help="macro store path (default: ~/.dume/macros.json)")
 
     pv = sub.add_parser("view", help="live end-effector camera view (no arm) — for focusing")
     pv.add_argument("--device", type=int, help="explicit camera index (default: probe for 1280x800)")
@@ -628,6 +698,7 @@ def main(argv=None) -> int:
         "axes": cmd_axes,
         "save-pose": cmd_save_pose,
         "run": cmd_run,
+        "record": cmd_record,
         "view": cmd_view,
         "scan": cmd_scan,
         "cloud": cmd_cloud,
