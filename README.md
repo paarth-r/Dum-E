@@ -1,29 +1,90 @@
-# dume
+# Dum-E
 
-Smooth, intuitive **inverse-kinematics controller** for the [LeRobot](https://github.com/huggingface/lerobot) **SO-101** arm, driven by an Xbox controller or keyboard — built as a reusable library so other services can call `goto` / `follow_path` / `jog` directly. Now with an interactive PyBullet **simulator**, servo-load **force sensing**, and scaffolding for **imitation learning**, aimed at generalizable, precise manipulation in the spirit of [TidyBot++](https://tidybot2.github.io/).
+A smooth inverse-kinematics controller for the [LeRobot SO-101](https://github.com/huggingface/lerobot)
+arm, driven from an Xbox pad or keyboard, with a physics simulator, hand-guided macros, and
+servo-load force sensing. Built as a library first: `DumeArm` is the API, the CLI is one consumer.
+Named after DUM-E, Tony Stark's clumsy robot arm.
 
-## Highlights
+<!-- GIF goes here: `dume run` on hardware or `./run_sim.sh`. Drop it at docs/dume.gif and use
+![Dum-E teleop](docs/dume.gif) -->
 
-- **Plan-then-solve:** every motion generates an explicit Cartesian path (straight-line + SLERP, trapezoidal timing), *then* solves IK along it — the seam for future obstacle-avoidance / contact-compliant planners.
-- **Connected feel (no jitter):** the loop tracks an internal *commanded reference* (`q_ref`) instead of noisy servo feedback — the TidyBot++ lesson — with a damped-least-squares jog solver, deadzone/expo shaping, and velocity + jerk limits.
-- **Two modes:** real-time Cartesian velocity jog, and absolute `goto` / named-pose recall.
-- **Interactive sim:** `dume sim` — PyBullet GUI, Xbox/keyboard control, a grabbable object, and OnShape-style mouse navigation.
-- **Force sensing:** `dume feel` — servo load minus modelled gravity, per joint, no extra hardware.
-- **Learning scaffolding:** episode recording and a diffusion-policy interface. Perception is moving to a fixed desk camera that localises the robot in the camera frame (not built yet).
-- **Captured start pose:** hand-pose the arm (torque off) and save its joints; `run` slews there on launch.
-- **Safe:** workspace bounding box, joint + step limits, `--dry-run` (no motor motion).
-- **Modular & tested:** `DumeArm` facade is the public API; the CLI is just one consumer; 143 tests.
+## What it does
+
+- **Plan-then-solve motion.** Every move generates an explicit Cartesian path (straight line +
+  SLERP, trapezoidal timing) and solves IK along it. That seam is where obstacle avoidance and
+  contact-aware planning will plug in.
+- **No jitter.** The loop tracks an internal commanded reference instead of noisy servo
+  feedback (the [TidyBot++](https://tidybot2.github.io/) lesson), with a damped-least-squares
+  jog solver, deadzone/expo shaping, and velocity + jerk limits. Near full extension a
+  nullspace posture bias keeps the arm from folding into a singularity and locking up.
+- **Two modes.** Real-time Cartesian velocity jog, and absolute `goto` / named-pose recall.
+- **Hand-guided macros.** Cut torque, move the arm by hand, replay it from a digit key.
+- **Force sensing without sensors.** `dume feel` reads servo load, subtracts modelled gravity
+  from the URDF's CAD masses, and shows what is left: a hand, a collision, a held object.
+- **Physics sim.** `dume sim` runs the identical control stack over a PyBullet arm with real
+  contacts and a grabbable box.
+- **Safe by default.** Workspace box, joint and step limits, `--dry-run` moves nothing.
+
+## What you need
+
+- A LeRobot **SO-101 follower** arm (Feetech STS3215 servos) on USB, calibrated once with
+  `dume calibrate`.
+- An **Xbox controller** (wireless Series X pad tested) or just the keyboard for the sim.
+- **macOS on Apple silicon** is the tested platform. Linux should work but is unverified.
+- **Python 3.12+** (lerobot 0.5 requires it) and [uv](https://github.com/astral-sh/uv).
+
+## Install
+
+```bash
+uv venv --python 3.12 && uv pip install -e ".[dev]"
+.venv/bin/python -m pytest -q     # 143 tests, no hardware needed
+```
+
+Two platform quirks, both handled or documented:
+
+- **placo's macOS wheel is broken** (0.9.23 links `liburdfdom_*.4.0` but ships `6.0.0`).
+  `dume` symlinks the sonames itself on first import (`src/dume/_placo_fix.py`); nothing to do.
+- **pybullet has no macOS arm64 wheel**, so pip builds it from source. On recent macOS SDKs the
+  build fails in `zutil.h` on a `#define fdopen` that clashes with the system `stdio.h`; remove
+  that define and build with `CFLAGS="-std=gnu17 -Wno-deprecated-non-prototype"`. The compiled
+  module lives in `.venv`, so a fresh venv repeats the build.
+
+lerobot ships no URDF, so the SO-ARM100 `so101_new_calib.urdf` and meshes are vendored in `urdf/`.
 
 ## Quick start
 
 ```bash
-uv venv --python 3.12 && uv pip install -e ".[dev]"
 .venv/bin/dume find-port            # confirm the serial port
-.venv/bin/dume calibrate            # one-time SO-101 calibration
+.venv/bin/dume calibrate            # one-time SO-101 calibration (wraps lerobot)
 .venv/bin/dume save-pose            # hand-pose the arm, hit Enter to save the start pose
 .venv/bin/dume run --dry-run        # validate IK + feel, no motion
 .venv/bin/dume run                  # live control (slews to the saved start pose first)
 ```
+
+## Controls
+
+Xbox, in `dume run` and `dume sim`. Button indices are SDL's Xbox layout; if a pad maps
+differently, `dume axes` shows live indices and `XboxMap` in `config.py` is the single place
+to change them.
+
+| Input | Action |
+|---|---|
+| Left stick | X / Y (positions the wrist pivot) |
+| Right stick Y, or L3 / R3 click | Z up / down |
+| D-pad up / down | wrist pitch (`wrist_flex`) |
+| D-pad left / right | wrist roll (`wrist_roll`) |
+| RT | gripper: **squeeze** mode maps trigger travel 1:1 to jaw opening |
+| LT / RT | gripper in **rate** mode: LT opens, RT closes, integrated over time |
+| X | toggle gripper mode (squeeze / rate) |
+| B | toggle velocity jog / freeze (pose hold) |
+| RB (hold) | turbo, 2.5x speed |
+| 0-9 keys | play the macro bound to that digit (space aborts) |
+| Space | toggle a limp gripper (torque off on the jaw only) |
+| Ctrl-C | quit; torque is released on disconnect |
+
+Keyboard, in `dume sim --keyboard` (focus the PyBullet window): `WASD` X/Y, `R`/`F` Z,
+arrows wrist pitch/roll, `O`/`C` gripper open/close, `[`/`]` snap closed/open, `M` mode,
+hold `Shift` for turbo.
 
 ## Saving poses
 
@@ -102,17 +163,46 @@ It doubles as the teleop-feel test rig and the cockpit for recording demonstrati
 - **Grab:** a dynamic box rests on the ground; close the gripper near it to pick it up, open to drop it.
 - **Navigate:** OnShape-style — left-drag orbit, `Ctrl`+left-drag pan, scroll to zoom.
 
-## Perception & learning (scaffolding)
+## Architecture
 
-Foundations toward learned, generalizable grasping. Everything hardware/data-independent is real
-and tested; hardware/data-bound pieces are explicit stubs.
+```
+input_xbox / input_keyboard  -->  Command  -->  controller  -->  arm (ArmIO)
+                                                  |  ^
+                               planning, kinematics, forces
+```
 
-- **Perception (next):** a fixed camera over the desk, with the robot localised in the camera
-  frame. The earlier end-effector camera and flown-stereo point-cloud stack was removed on
-  2026-09-14 (see git history before that date if you need it).
-- **Episode recording** (`dataset.py`): synchronized observation/action episodes in a custom,
-  framework-agnostic format, with a `to_lerobot()` export for training.
-- **Policy interface** (`policy.py`): a `Policy` protocol with a scripted policy for tests and a
-  lerobot `DiffusionPolicy` adapter, pending recorded demonstrations.
+| Module | Owns |
+|---|---|
+| `service.py` | `DumeArm`, the public facade: `goto`, `follow_path`, `jog`, `home`, `goto_joints`, `run_teleop` |
+| `controller.py` | the 50 Hz control core: commanded reference, jog solver, slew/jerk limits, joint moves |
+| `kinematics.py` | FK / IK / Jacobian / gravity torques over lerobot's placo solver, plus the DLS jog solver |
+| `planning.py` | Cartesian trajectories with trapezoidal timing |
+| `arm.py` | `ArmIO` protocol; `SO101Arm` (hardware via lerobot) and `SimArm` (kinematic stand-in) |
+| `sim_world.py` | PyBullet scene, renderer, `PyBulletArm` (physics-backed `ArmIO`), GUI navigation |
+| `forces.py` | `ForceEstimator`: load minus gravity, filtered, mapped to an end-effector wrench |
+| `macros.py`, `poses.py` | hand-guided recordings and named joint setpoints, persisted under `~/.dume/` |
+| `input_xbox.py`, `input_keyboard.py` | pad and keyboard into a shared `Command` |
+| `config.py` | every tunable: feel, limits, gripper, the Xbox map |
+| `dataset.py`, `policy.py` | episode recording and the policy interface for imitation learning |
+| `geometry.py` | pure 4x4 pose math |
+| `cli.py` | the `dume` command |
 
-See `docs/superpowers/specs/` for the designs.
+Joint vectors are length 6 in URDF order: `shoulder_pan, shoulder_lift, elbow_flex, wrist_flex,
+wrist_roll, gripper`. The first five are degrees; the gripper is normalised 0-100.
+
+## Status
+
+| Area | State |
+|---|---|
+| Teleop, goto, named poses, macros | live on hardware |
+| Physics sim with grasping | live |
+| Force sensing (`dume feel`) | built and verified in sim; hardware bus timing and load calibration pending |
+| Grasp sensing, collision detection, compliance, zero-g | designed, not built ([design](docs/superpowers/specs/2026-09-08-force-sensing-design.md)) |
+| Perception | next up: a fixed camera over the desk with the robot localised in the camera frame. The earlier end-effector camera stack was removed on 2026-09-14 |
+| Imitation learning | recording format and policy interface exist; diffusion-policy training is a stub |
+
+Design notes for each feature live in `docs/superpowers/specs/`.
+
+## License
+
+[MIT](LICENSE).

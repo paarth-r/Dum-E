@@ -3,6 +3,8 @@ name = "dume"
 version = "0.1.0"
 description = "Smooth, intuitive inverse-kinematics controller for the LeRobot SO-101 arm"
 readme = "README.md"
+license = "MIT"
+authors = [{ name = "Paarth Rajpal" }]
 requires-python = ">=3.12"
 dependencies = [
     "lerobot[feetech,kinematics,gamepad]>=0.5.1",

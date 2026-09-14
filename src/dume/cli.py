@@ -356,7 +356,7 @@ def cmd_sim(args) -> int:
     )
     _PAD_HELP = (
         "Left stick: X/Y | Right stick: Z | D-pad: wrist pitch/roll | LT/RT: gripper | "
-        "A/Y: close/open | B: velocity/freeze | Ctrl-C: quit"
+        "X: gripper mode | B: velocity/freeze | RB: turbo | Ctrl-C: quit"
     )
     _MOUSE_HELP = "Camera: drag = orbit, Ctrl+drag = pan, scroll = zoom"
 
