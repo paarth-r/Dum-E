@@ -102,6 +102,36 @@ class Kinematics:
         """Forward kinematics: joint angles (deg) -> 4x4 end-effector pose."""
         return np.asarray(self._kin.forward_kinematics(np.asarray(joints_deg, dtype=float)))
 
+    # ---- dynamics seam (force sensing) --------------------------------------
+    def _set_state(self, joints_deg) -> None:
+        robot = self._kin.robot
+        for name, val in zip(self.joint_names, np.deg2rad(np.asarray(joints_deg, dtype=float))):
+            robot.set_joint(name, float(val))
+        robot.update_kinematics()
+
+    def gravity_torques(self, joints_deg) -> np.ndarray:
+        """Static gravity torque per joint (N*m, ``joint_names`` order) at ``joints_deg``.
+
+        The torque each motor must apply to hold the pose against gravity, i.e. dU/dq with U the
+        potential energy of the URDF's CAD-derived link masses (``static_gravity_compensation_torques``
+        in placo). Vertical-axis joints (shoulder_pan) and wrist_roll come out ~0 at every pose.
+        """
+        self._set_state(joints_deg)
+        tau = self._kin.robot.static_gravity_compensation_torques_dict("base_link")
+        return np.array([tau[name] for name in self.joint_names], dtype=float)
+
+    def jacobian(self, joints_deg, frame: str | None = None) -> np.ndarray:
+        """(6, n_joints) spatial Jacobian of ``frame`` (default: the end-effector) at ``joints_deg``.
+
+        Rows are [linear xyz; angular xyz] in the base frame, per radian of each joint. Used to
+        map joint torques to a Cartesian wrench at the gripper; not used for IK.
+        """
+        self._set_state(joints_deg)
+        robot = self._kin.robot
+        J_full = np.asarray(robot.frame_jacobian(frame or self._kin.target_frame_name, "local_world_aligned"))
+        cols = [robot.get_joint_v_offset(name) for name in self.joint_names]
+        return J_full[:, cols]
+
     def manipulability(self, joints_deg) -> float:
         """Yoshikawa position manipulability ``sqrt(det(J Jᵀ))`` at ``joints_deg``.
 
