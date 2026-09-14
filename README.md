@@ -12,7 +12,7 @@ Smooth, intuitive **inverse-kinematics controller** for the [LeRobot](https://gi
 - **Learning scaffolding:** episode recording and a diffusion-policy interface. Perception is moving to a fixed desk camera that localises the robot in the camera frame (not built yet).
 - **Captured start pose:** hand-pose the arm (torque off) and save its joints; `run` slews there on launch.
 - **Safe:** workspace bounding box, joint + step limits, `--dry-run` (no motor motion).
-- **Modular & tested:** `DumeArm` facade is the public API; the CLI is just one consumer; ~90 tests.
+- **Modular & tested:** `DumeArm` facade is the public API; the CLI is just one consumer; 143 tests.
 
 ## Quick start
 
