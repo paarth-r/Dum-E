@@ -75,3 +75,62 @@ class ForceEstimator:
         return ForceReading(
             q_deg=q, load=load, gravity_load=g_load, residual=residual, tau_ext=tau_ext, wrench=wrench
         )
+
+
+# ---- `dume feel` readout + calibration logging ------------------------------------------
+
+def format_feel(joint_names, reading: ForceReading, *, voltage: float | None, hz: float) -> str:
+    """Multi-line block for the ``dume feel`` readout: one row per joint plus the wrench."""
+    lines = [
+        f"{'joint':14} {'angle':>7} {'load':>7} {'gravity':>8} {'resid':>7} {'ext':>7}",
+    ]
+    for i, name in enumerate(joint_names):
+        lines.append(
+            f"{name:14} {reading.q_deg[i]:7.1f} {reading.load[i]:7.0f} {reading.gravity_load[i]:8.1f} "
+            f"{reading.residual[i]:7.1f} {reading.tau_ext[i]:7.1f}"
+        )
+    fx, fy, fz, tx, ty, tz = reading.wrench
+    volts = f"{voltage:.1f} V" if voltage is not None else "-- V"
+    lines.append(
+        f"wrench  F=({fx:+.2f},{fy:+.2f},{fz:+.2f})  T=({tx:+.3f},{ty:+.3f},{tz:+.3f})   "
+        f"{volts}   {hz:4.0f} Hz"
+    )
+    return "\n".join(lines)
+
+
+class LoadLogger:
+    """CSV of ``(t, q, load, gravity, voltage)`` samples — the input the calibration sweep fits."""
+
+    def __init__(self, path, joint_names):
+        self.path = path
+        self.names = list(joint_names)
+        self._f = None
+        self._w = None
+
+    def __enter__(self) -> "LoadLogger":
+        import csv
+
+        self._f = open(self.path, "w", newline="")
+        self._w = csv.writer(self._f)
+        self._w.writerow(
+            ["t"]
+            + [f"q_{n}" for n in self.names]
+            + [f"load_{n}" for n in self.names]
+            + [f"grav_{n}" for n in self.names]
+            + ["voltage"]
+        )
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._f is not None:
+            self._f.close()
+            self._f = None
+
+    def write(self, t: float, reading: ForceReading, *, voltage: float | None) -> None:
+        self._w.writerow(
+            [t]
+            + [float(v) for v in reading.q_deg]
+            + [float(v) for v in reading.load]
+            + [float(v) for v in reading.gravity_load]
+            + ["" if voltage is None else voltage]
+        )

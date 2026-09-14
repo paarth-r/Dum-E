@@ -65,6 +65,27 @@ Outside a macro, space toggles a **limp gripper**: torque is cut on the jaw only
 position it (or the object) by hand while the arm keeps holding; space re-grips, and starting
 a macro re-grips automatically. In squeeze mode the jaw then returns to the trigger position.
 
+## Force sensing (`dume feel`)
+
+The servos have no torque sensor, but each STS3215 reports `Present_Load` — the PWM duty its
+position loop is applying, which at rest is proportional to torque. `dume feel` reads it on
+every joint, subtracts the torque gravity demands at the measured pose (from the URDF's CAD
+link masses, via placo), and shows the residual: a hand on the arm, a collision, a held object.
+
+```bash
+.venv/bin/dume feel                          # live table: angle / load / gravity / resid / ext
+.venv/bin/dume feel --log sweep.csv --seconds 5   # record samples at this pose for calibration
+.venv/bin/dume feel --dry-run                # sim self-check: residual must read exactly 0
+```
+
+The arm holds wherever it is while `feel` runs (load reads 0 with torque off), so push on a
+link and the joints upstream of it light up. Everything is in **raw servo load units** until
+`--scale` (N*m per unit) is fitted: log a grid of static poses with `--log`, regress load
+against the `grav_*` columns, and the slope is the scale. The status line's Hz is the achieved
+loop rate *with* the extra load read on the bus — check it before hanging anything on this
+signal at 50 Hz. Design and the follow-ons (grasp sensing, collision detection, compliance,
+zero-g) live in `docs/superpowers/specs/2026-09-08-force-sensing-design.md`.
+
 ## Simulation (`dume sim`)
 
 A PyBullet harness that runs the exact control stack over a kinematic arm — no hardware needed.

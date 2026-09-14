@@ -10,6 +10,7 @@
     dume scan [--poses A B]     walk saved setpoints, streaming the end-effector camera
     dume cloud                  sweep the arm, triangulating a live 3D point cloud
     dume goto X Y Z R P Y       move to an absolute pose (metres, radians)
+    dume feel [--log F.csv]     live per-joint load / modelled gravity / residual readout
 """
 
 from __future__ import annotations
@@ -627,6 +628,72 @@ def cmd_goto(args) -> int:
     return 0
 
 
+def cmd_feel(args) -> int:
+    """Live force readout: raw servo load, modelled gravity, and their residual, per joint.
+
+    The arm holds wherever it is (torque on — load is meaningless with torque off), so pushing
+    on a link shows up as residual on the joints upstream of it. ``--log`` records every sample
+    for the calibration sweep that fits ``scale`` (see the force-sensing design doc). The status
+    line's Hz is the achieved rate *with* the extra load read on the bus.
+    """
+    from dume.arm import SimArm
+    from dume.forces import ForceEstimator, LoadLogger, format_feel
+    from dume.kinematics import Kinematics
+    from dume.poses import HOME_JOINTS
+    from dume.service import DumeArm
+
+    sim = None
+    if args.dry_run:
+        # A perfect servo holding a perfect model: load == modelled gravity, residual == 0.
+        # Non-zero residual in dry-run therefore means the pipeline itself is broken.
+        model = Kinematics()
+        sim = SimArm(initial_joints=HOME_JOINTS, load_source=lambda q: model.gravity_torques(q))
+    with DumeArm(dry_run=args.dry_run, arm=sim) as arm:
+        if not args.dry_run and not arm.arm.is_calibrated():
+            print("Arm is not calibrated. Run `dume calibrate` first.", file=sys.stderr)
+            return 2
+        est = ForceEstimator(arm.kin, scale=args.scale, friction_floor=args.floor, alpha=args.alpha)
+        read_voltage = getattr(arm.arm, "read_voltage", None)
+        names = arm.kin.joint_names
+        n_lines = len(names) + 2
+        print(f"Mode: {'DRY-RUN (synthetic load = modelled gravity; residual must read 0)' if args.dry_run else 'LIVE'}")
+        print("Holding position. Push on the arm to see residual load. Ctrl-C to quit.")
+        if args.log:
+            print(f"Logging samples to {args.log}")
+        period = 1.0 / args.hz
+        with contextlib.ExitStack() as stack:
+            log = stack.enter_context(LoadLogger(args.log, names)) if args.log else None
+            voltage = None
+            hz = 0.0
+            t_start = t_prev = time.perf_counter()
+            tick = 0
+            print("\n" * (n_lines - 1), end="")
+            try:
+                while args.seconds is None or time.perf_counter() - t_start < args.seconds:
+                    t0 = time.perf_counter()
+                    q = arm.arm.read_joints()
+                    reading = est.update(q, arm.arm.read_loads())
+                    if read_voltage is not None and tick % 25 == 0:
+                        voltage = read_voltage()
+                    if tick > 0:  # first interval is just setup time, not a loop period
+                        inst = 1.0 / max(t0 - t_prev, 1e-6)
+                        hz = inst if tick == 1 else 0.9 * hz + 0.1 * inst
+                    t_prev = t0
+                    if log is not None:
+                        log.write(round(t0 - t_start, 4), reading, voltage=voltage)
+                    if tick % args.every == 0:
+                        sys.stdout.write(f"\033[{n_lines}F\033[J")
+                        print(format_feel(names, reading, voltage=voltage, hz=hz), flush=True)
+                    tick += 1
+                    sleep = period - (time.perf_counter() - t0)
+                    if sleep > 0:
+                        time.sleep(sleep)
+            except KeyboardInterrupt:
+                pass
+    print("Stopped.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="dume", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="command", required=True)
@@ -697,6 +764,17 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("pose", nargs=6, type=float, metavar=("X", "Y", "Z", "ROLL", "PITCH", "YAW"))
     pg.add_argument("--dry-run", action="store_true")
 
+    pf = sub.add_parser("feel", help="live per-joint load / gravity / residual readout")
+    pf.add_argument("--dry-run", action="store_true", help="simulated arm (loads read as zero)")
+    pf.add_argument("--log", help="CSV path to record every sample (for the calibration sweep)")
+    pf.add_argument("--hz", type=float, default=50.0, help="sample rate to attempt (default: 50)")
+    pf.add_argument("--seconds", type=float, help="stop after this long (default: run until Ctrl-C)")
+    pf.add_argument("--every", type=int, default=5, help="redraw the table every N samples")
+    pf.add_argument("--scale", type=float, default=1.0,
+                    help="N*m per raw load unit (default 1.0 = uncalibrated, raw units)")
+    pf.add_argument("--floor", type=float, default=0.0, help="friction deadband, raw units")
+    pf.add_argument("--alpha", type=float, default=0.3, help="residual low-pass (1 = none)")
+
     psim = sub.add_parser("sim", help="interactive PyBullet sim, Xbox-driven")
     psim.add_argument("--noise", type=float, default=0.0,
                       help="inject N deg servo-feedback noise to feel the smoothing (default 0)")
@@ -722,6 +800,7 @@ def main(argv=None) -> int:
         "cloud": cmd_cloud,
         "goto": cmd_goto,
         "sim": cmd_sim,
+        "feel": cmd_feel,
     }[args.command](args)
 
 

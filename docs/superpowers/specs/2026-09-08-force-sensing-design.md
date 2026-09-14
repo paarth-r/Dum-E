@@ -1,7 +1,8 @@
 # Force sensing on dumE
 
 Date: 2026-09-08
-Status: design approved, awaiting spec review
+Status: design approved. SP1 implemented 2026-09-14 (`dume feel`, `forces.py`, `read_loads`;
+hardware bus-timing measurement and the calibration sweep still to run). SP2 next.
 
 ## Goal
 
