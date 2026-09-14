@@ -1,18 +1,15 @@
-"""PyBullet-backed kinematic simulator and synthetic camera for the SO-101.
+"""PyBullet-backed simulator for the SO-101.
 
-Three layers::
+Layers::
 
     SceneObject / SimScene  — pure data; describe what is in the world.
     SimRenderer             — owns a PyBullet client; loads the arm URDF and spawns
-                              SceneObjects as static rigid bodies.
-    SimCamera               — implements CameraSource; renders RGB + depth from the
-                              current arm pose and returns Detections via segmentation.
+                              SceneObjects as rigid bodies.
+    PyBulletArm             — ``ArmIO`` over the physics arm (the control stack drives this).
+    OrbitCameraNav          — GUI viewpoint navigation (not a sensor).
 
 All classes operate in PyBullet DIRECT (headless) mode by default so they work in CI.
-
-Coordinate conventions follow :mod:`dume.camera`:
-- Arm base frame for world coordinates.
-- Camera optical frame: +z forward, +x right, +y down (OpenCV).
+World coordinates are the arm base frame.
 
 Usage example::
 
@@ -21,24 +18,17 @@ Usage example::
     scene.add(SceneObject("target", "box", half_extents=[0.02,0.02,0.02],
                           position=[0.3, 0.0, 0.2]))
     renderer.load_scene(scene)
-
-    intrinsics = CameraIntrinsics.from_fov(320, 240, fov_y_deg=60.0)
-    cam = SimCamera(renderer, intrinsics, pose_provider=lambda: np.eye(4))
-    frame = cam.capture()
-    dets  = cam.detect()
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Callable
 
 import numpy as np
 import pybullet as p
 
 from dume.arm import MOTOR_ORDER
-from dume.camera import CameraFrame, CameraIntrinsics, Detections
 from dume.kinematics import DEFAULT_URDF
 
 # ---------------------------------------------------------------------------
@@ -487,55 +477,6 @@ class PyBulletArm:
             )
 
 
-# ---------------------------------------------------------------------------
-# Camera
-# ---------------------------------------------------------------------------
-
-# Depth linearisation constants (metres).
-_NEAR: float = 0.01
-_FAR: float = 5.0
-
-
-def _view_matrix_from_pose(cam_pose: np.ndarray) -> list[float]:
-    """Build a PyBullet view matrix from a 4x4 camera pose (OpenCV convention).
-
-    The camera optical frame has +z forward and +y down.
-    ``target = eye + forward``, ``up = -T[:3,1]`` (negate because +y is down).
-    """
-    eye = cam_pose[:3, 3]
-    forward = cam_pose[:3, 2]
-    target = eye + forward
-    up = -cam_pose[:3, 1]  # +y is down in optical frame; PyBullet wants "up" vector
-    return list(p.computeViewMatrix(
-        cameraEyePosition=eye.tolist(),
-        cameraTargetPosition=target.tolist(),
-        cameraUpVector=up.tolist(),
-    ))
-
-
-def _proj_matrix_from_intrinsics(intrinsics: CameraIntrinsics) -> list[float]:
-    """Build a PyBullet projection matrix from :class:`CameraIntrinsics`."""
-    fov_y_rad = 2.0 * math.atan((intrinsics.height / 2.0) / intrinsics.fy)
-    fov_y_deg = math.degrees(fov_y_rad)
-    aspect = intrinsics.width / intrinsics.height
-    return list(p.computeProjectionMatrixFOV(
-        fov=fov_y_deg,
-        aspect=aspect,
-        nearVal=_NEAR,
-        farVal=_FAR,
-    ))
-
-
-def _depth_buffer_to_metres(depth_buf: np.ndarray) -> np.ndarray:
-    """Convert PyBullet's normalised depth buffer to metric depth (metres).
-
-    PyBullet stores ``(far/depth_linear - 1) / (far/near - 1)`` so the inverse is::
-
-        depth_m = far * near / (far - (far - near) * depth_buf)
-    """
-    return _FAR * _NEAR / (_FAR - (_FAR - _NEAR) * depth_buf)
-
-
 class OrbitCameraNav:
     """OnShape-style GUI camera: left-drag orbits, Ctrl+left-drag pans, wheel zooms.
 
@@ -582,117 +523,3 @@ class OrbitCameraNav:
                     self.yaw += dx * self.rotate_gain
                     self.pitch = float(np.clip(self.pitch - dy * self.rotate_gain, -89.0, 89.0))
         p.resetDebugVisualizerCamera(dist, self.yaw, self.pitch, self.target, physicsClientId=self._client)
-
-
-class SimCamera:
-    """Synthetic camera that renders from the current arm pose via PyBullet.
-
-    Implements :class:`dume.camera.CameraSource`.
-
-    Parameters
-    ----------
-    renderer:
-        A connected :class:`SimRenderer`.
-    intrinsics:
-        Pinhole camera parameters (width, height, focal lengths).
-    pose_provider:
-        Zero-argument callable that returns the 4x4 camera-in-world pose.
-        Typically ``lambda: camera_pose_from_fk(kin, arm.read_joints())``.
-    hardware:
-        Use the GPU renderer (``ER_BULLET_HARDWARE_OPENGL``) instead of the CPU software
-        rasterizer (``ER_TINY_RENDERER``). The software path is *very* slow — keep ``hardware``
-        on in a GUI session; tests in DIRECT mode use software for reliability.
-    """
-
-    def __init__(
-        self,
-        renderer: SimRenderer,
-        intrinsics: CameraIntrinsics,
-        pose_provider: Callable[[], np.ndarray],
-        hardware: bool = False,
-    ) -> None:
-        self._renderer = renderer
-        self.intrinsics = intrinsics
-        self._pose_provider = pose_provider
-        self._render_flag = p.ER_BULLET_HARDWARE_OPENGL if hardware else p.ER_TINY_RENDERER
-        # Cache last seg buffer for detect() to avoid double-render.
-        self._last_seg: np.ndarray | None = None
-        self._last_depth_m: np.ndarray | None = None
-
-    # ------------------------------------------------------------------
-    # CameraSource protocol
-    # ------------------------------------------------------------------
-
-    def capture(self) -> CameraFrame:
-        """Render a frame from the current camera pose.
-
-        Returns a :class:`~dume.camera.CameraFrame` with:
-
-        - ``rgb``: ``(H, W, 3)`` uint8 array.
-        - ``depth``: ``(H, W)`` float32 array in metres.
-        - ``pose``: the 4x4 camera pose used.
-        - ``t``: 0.0 (no clock in sim).
-        """
-        cam_pose = np.asarray(self._pose_provider(), dtype=float)
-        view = _view_matrix_from_pose(cam_pose)
-        proj = _proj_matrix_from_intrinsics(self.intrinsics)
-
-        W, H = self.intrinsics.width, self.intrinsics.height
-        _, _, rgb_raw, depth_raw, seg_raw = p.getCameraImage(
-            width=W,
-            height=H,
-            viewMatrix=view,
-            projectionMatrix=proj,
-            renderer=self._render_flag,
-            physicsClientId=self._renderer.client,
-        )
-
-        rgb = np.array(rgb_raw, dtype=np.uint8).reshape(H, W, 4)[:, :, :3]
-        depth_buf = np.array(depth_raw, dtype=np.float32).reshape(H, W)
-        depth_m = _depth_buffer_to_metres(depth_buf).astype(np.float32)
-        seg = np.array(seg_raw, dtype=np.int32).reshape(H, W)
-
-        # Cache for detect().
-        self._last_seg = seg
-        self._last_depth_m = depth_m
-
-        return CameraFrame(pose=cam_pose, rgb=rgb, depth=depth_m, t=0.0)
-
-    def detect(self) -> Detections:
-        """Return detections for scene objects visible in the last captured frame.
-
-        Calls :meth:`capture` internally if no frame has been captured yet.
-        Segmentation body ids are mapped back to stable scene-object indices.
-        """
-        if self._last_seg is None or self._last_depth_m is None:
-            self.capture()
-
-        seg: np.ndarray = self._last_seg  # type: ignore[assignment]
-        depth_m: np.ndarray = self._last_depth_m  # type: ignore[assignment]
-        body_to_idx = self._renderer.body_to_idx
-
-        ids: list[int] = []
-        pixels_list: list[tuple[float, float]] = []
-        depths_list: list[float] = []
-
-        H, W = seg.shape
-        for body_id, obj_idx in body_to_idx.items():
-            mask = seg == body_id
-            if not np.any(mask):
-                continue
-            rows, cols = np.where(mask)
-            u = float(np.mean(cols))
-            v = float(np.mean(rows))
-            med_depth = float(np.median(depth_m[mask]))
-            ids.append(obj_idx)
-            pixels_list.append((u, v))
-            depths_list.append(med_depth)
-
-        if ids:
-            pixels = np.array(pixels_list, dtype=float)
-            depths = np.array(depths_list, dtype=float)
-        else:
-            pixels = np.zeros((0, 2), dtype=float)
-            depths = np.zeros((0,), dtype=float)
-
-        return Detections(ids=ids, pixels=pixels, depths=depths)

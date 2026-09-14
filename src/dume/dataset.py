@@ -34,7 +34,6 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from dume.camera import CameraSource, Detections
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +43,7 @@ from dume.camera import CameraSource, Detections
 
 @dataclass
 class Observation:
-    """One snapshot of the world: arm state + optional camera data.
+    """One snapshot of the world: arm state + optional image data.
 
     Parameters
     ----------
@@ -52,19 +51,16 @@ class Observation:
         Length-6 joint vector (degrees, except element 5 which is gripper 0..100).
     ee_pose:
         4x4 homogeneous transform of the end-effector in the arm base frame.
-    detections:
-        Object detections from the wrist camera, if available.
     depth:
-        (H, W) depth map in metres from the wrist camera, if available.
+        (H, W) depth map in metres, if a camera provided one.
     image:
-        (H, W, 3) uint8 RGB image from the wrist camera, if available.
+        (H, W, 3) uint8 RGB image, if a camera provided one.
     t:
         Timestamp in seconds (monotonic clock of the recording host).
     """
 
     joints: np.ndarray          # (6,)
     ee_pose: np.ndarray         # (4, 4)
-    detections: Detections | None = None
     depth: np.ndarray | None = None     # (H, W) float32/float64
     image: np.ndarray | None = None     # (H, W, 3) uint8
     t: float = 0.0
@@ -120,10 +116,12 @@ class Episode:
 def observe(
     arm,
     kin,
-    camera: CameraSource | None = None,
     t: float = 0.0,
+    *,
+    image: np.ndarray | None = None,
+    depth: np.ndarray | None = None,
 ) -> Observation:
-    """Build an :class:`Observation` by querying ``arm`` and optionally ``camera``.
+    """Build an :class:`Observation` by querying ``arm``; pass any image data explicitly.
 
     Parameters
     ----------
@@ -131,38 +129,19 @@ def observe(
         Any object satisfying the ``ArmIO`` protocol (``read_joints()->np.ndarray``).
     kin:
         A ``Kinematics`` instance; ``fk(joints_deg)->4x4`` is called once.
-    camera:
-        Optional :class:`~dume.camera.CameraSource`. When provided, ``capture()`` and
-        ``detect()`` are both called and their outputs stored in the Observation.
     t:
         Timestamp in seconds to tag this snapshot.
+    image, depth:
+        Optional camera data from whatever sensor the caller owns.
 
     Returns
     -------
     Observation
-        Fully populated observation; depth/image/detections are None when ``camera`` is None.
+        Populated observation; depth/image are None unless passed.
     """
     joints = np.asarray(arm.read_joints(), dtype=float)
     ee_pose = np.asarray(kin.fk(joints), dtype=float)
-
-    depth: np.ndarray | None = None
-    image: np.ndarray | None = None
-    detections: Detections | None = None
-
-    if camera is not None:
-        frame = camera.capture()
-        depth = frame.depth
-        image = frame.rgb
-        detections = camera.detect()
-
-    return Observation(
-        joints=joints,
-        ee_pose=ee_pose,
-        detections=detections,
-        depth=depth,
-        image=image,
-        t=t,
-    )
+    return Observation(joints=joints, ee_pose=ee_pose, depth=depth, image=image, t=t)
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +331,6 @@ class LocalBackend:
                 ee_pose=ee_pose_all[i],
                 depth=depth_all[i] if depth_all is not None else None,
                 image=image_all[i] if image_all is not None else None,
-                detections=None,   # not serialised; reconstructed from sensor on replay
                 t=0.0,
             )
             act = Action(joints_target=action_joints_all[i])

@@ -55,7 +55,7 @@ def test_recorder_assembles_episode(kin):
 
     for joints in joint_sequences:
         arm.write_joints(joints)
-        obs = observe(arm, kin, camera=None, t=0.1)
+        obs = observe(arm, kin, t=0.1)
         act = Action(joints_target=joints + 1.0)   # trivial: shift by 1
         rec.record(obs, act)
 
@@ -79,10 +79,9 @@ def test_recorder_assembles_episode(kin):
     # ee_pose is 4x4
     assert episode.steps[0].observation.ee_pose.shape == (4, 4)
 
-    # camera fields are None (we passed camera=None)
+    # image fields are None (nothing was passed)
     assert episode.steps[0].observation.depth is None
     assert episode.steps[0].observation.image is None
-    assert episode.steps[0].observation.detections is None
 
 
 # ---------------------------------------------------------------------------

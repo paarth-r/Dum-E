@@ -4,11 +4,8 @@
     dume calibrate              one-time SO-101 calibration (wraps lerobot)
     dume axes                   print live controller axes/buttons (verify mapping)
     dume save-pose [--name N]   hand-pose the arm, hit Enter to save its joints (default: start)
-    dume run [--dry-run]        Xbox teleoperation (velocity jog + pose mode); --view adds camera
+    dume run [--dry-run]        Xbox teleoperation (velocity jog + pose mode)
     dume record                 record a hand-guided macro onto a digit key (played in `run`)
-    dume view                   live camera view only (no arm) — use this to focus the lens
-    dume scan [--poses A B]     walk saved setpoints, streaming the end-effector camera
-    dume cloud                  sweep the arm, triangulating a live 3D point cloud
     dume goto X Y Z R P Y       move to an absolute pose (metres, radians)
     dume feel [--log F.csv]     live per-joint load / modelled gravity / residual readout
 """
@@ -165,188 +162,6 @@ def cmd_save_pose(args) -> int:
     return 0
 
 
-def _camera_tick(view, camera, extra_lines=None):
-    """Tick hook that renders the live feed and reports a keypress as an abort.
-
-    Deliberately does NOT read joints to compute a pose: ``controller.step`` already reads the
-    bus every tick, and a second read here would double serial traffic in the control loop.
-    Poses are attached at stops, where the arm is stationary and reads can be averaged.
-    """
-
-    def tick(*_):
-        frame = camera.capture()
-        key = view.show(frame.rgb, list(extra_lines or []))
-        return False if key != 255 else None  # 255 == no key (waitKey -1 masked)
-
-    return tick
-
-
-def cmd_view(args) -> int:
-    """Camera-only live viewer. No arm, no motion — stays open until you quit.
-
-    Exists because focusing the M12 lens is a blind adjustment: it needs a window that simply
-    persists while you turn the barrel. ``scan`` renders during motion and at stops, so it is
-    the wrong tool for this — with ``--dry-run`` the sim arm teleports and there is nothing to
-    render at all.
-    """
-    from dume.arducam import ArduCamSource
-    from dume.focus import focus_lines
-    from dume.liveview import LiveView
-
-    with ArduCamSource(device=args.device) as camera, LiveView("dume view") as view:
-        print(f"Camera on device {camera.device} "
-              f"({camera.intrinsics.width}x{camera.intrinsics.height}, intrinsics UNCALIBRATED)")
-        print("Turn the lens barrel to maximise the numbers. 'q' or Esc to quit.")
-        best = 0.0
-        while True:
-            frame = camera.capture()
-            lines = [] if args.no_metrics else focus_lines(frame.rgb)
-            if lines:
-                # Track the best seen so you can tell you've walked past the optimum.
-                from dume.focus import sharpness
-
-                best = max(best, sharpness(frame.rgb))
-                lines.append(f"best seen {best:7.1f}")
-            key = view.show(frame.rgb, lines)
-            if key in (ord("q"), 27):
-                break
-    print("Closed.")
-    return 0
-
-
-def cmd_cloud(args) -> int:
-    """Sweep the arm, triangulating a live point cloud in the arm base frame."""
-    from dume.arducam import ArduCamSource
-    from dume.cloudview import CloudView
-    from dume.liveview import LiveView
-    from dume.pointcloud import CloudBuilder
-    from dume.scan import averaged_joints, run_scan, sweep_setpoints
-    from dume.service import DumeArm
-
-    with DumeArm(dry_run=args.dry_run) as arm:
-        if not args.dry_run and not arm.arm.is_calibrated():
-            print("Arm is not calibrated. Run `dume calibrate` first.", file=sys.stderr)
-            return 2
-        arm.config.joint_slew_deg = args.slew
-
-        base = averaged_joints(arm.arm, 5)
-        names, store = sweep_setpoints(base, n=args.stops, pan_deg=args.pan)
-        print(f"Sweeping {args.pan:.0f} deg of shoulder_pan in {args.stops} stops "
-              f"around pan={base[0]:.1f} deg.")
-        print("Any key in the camera window aborts.")
-
-        with ArduCamSource() as camera, LiveView("dume cloud - camera") as view:
-            builder = CloudBuilder(
-                camera.intrinsics.K,
-                min_baseline=args.min_baseline,
-                max_range=args.max_range,
-            )
-            cloud = None
-            if not args.no_3d:
-                cloud = CloudView(arm.config.urdf_path, arm.kin.joint_names)
-            try:
-                tick = _camera_tick(view, camera, ["sweeping — any key aborts"])
-                for stop in run_scan(arm, camera, names, store, dwell=args.dwell,
-                                     samples=args.samples, on_tick=tick):
-                    added = builder.add(stop.frame.rgb, stop.pose)
-                    print(f"  [{stop.name}] matches={builder.last_matches:5d} "
-                          f"kept={builder.last_kept:5d} total={len(builder.points):6d}")
-                    view.show(stop.frame.rgb,
-                              [f"{stop.name}: +{added} pts", f"cloud {len(builder.points)}"])
-                    if cloud is not None:
-                        cloud.set_joints(stop.joints)
-                        cloud.set_points(builder.points)
-
-                pts = builder.points
-                print(f"\nCloud: {len(pts)} points, base frame, from {builder.keyframes} keyframes.")
-                if len(pts):
-                    lo, hi = pts.min(0) * 1000, pts.max(0) * 1000
-                    print(f"  extent x[{lo[0]:7.0f},{hi[0]:7.0f}] "
-                          f"y[{lo[1]:7.0f},{hi[1]:7.0f}] z[{lo[2]:7.0f},{hi[2]:7.0f}] mm")
-                    out = Path(args.out).expanduser()
-                    out.parent.mkdir(parents=True, exist_ok=True)
-                    np.save(out, pts)
-                    print(f"  saved {out}  (NON-METRIC: intrinsics uncalibrated)")
-                if cloud is not None:
-                    input("\n3D view is open. Press Enter to close... ")
-            finally:
-                if cloud is not None:
-                    cloud.close()
-    return 0
-
-
-def cmd_scan(args) -> int:
-    """Walk the arm through saved setpoints, streaming the end-effector camera."""
-    from dume.arducam import ArduCamSource
-    from dume.liveview import LiveView, pose_lines
-    from dume.poses import DEFAULT_JOINT_STORE, JointPoseStore
-    from dume.scan import run_scan
-    from dume.service import DumeArm
-
-    store = JointPoseStore(args.file or DEFAULT_JOINT_STORE)
-    names = args.poses or store.names()
-    if not names:
-        print(f"No saved setpoints in {store.path}. Capture one with `dume save-pose`.",
-              file=sys.stderr)
-        return 2
-    missing = [n for n in names if not store.has(n)]
-    if missing:
-        print(f"Unknown setpoint(s) {missing}. Known: {store.names()}", file=sys.stderr)
-        return 2
-
-    out_dir = None
-    if args.save:
-        out_dir = Path(args.save).expanduser()
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-    with DumeArm(dry_run=args.dry_run) as arm:
-        if not args.dry_run and not arm.arm.is_calibrated():
-            print("Arm is not calibrated. Run `dume calibrate` first.", file=sys.stderr)
-            return 2
-        # Scripted motion moves with nobody's hand on the arm; default to a gentler cap.
-        arm.config.joint_slew_deg = args.slew
-        print(f"Visiting {len(names)} setpoint(s): {', '.join(names)}")
-        print(f"Slew {args.slew} deg/tick, dwell {args.dwell}s. Any key in the view aborts.")
-
-        with ArduCamSource() as camera, LiveView("dume scan") as view:
-            print(f"Camera on device {camera.device} ({camera.intrinsics.width}x"
-                  f"{camera.intrinsics.height}, intrinsics UNCALIBRATED)")
-            tick = _camera_tick(view, camera, ["scanning — any key aborts"])
-            stops = 0
-            for stop in run_scan(arm, camera, names, store, dwell=args.dwell,
-                                 samples=args.samples, on_tick=tick):
-                stops += 1
-                xyz = stop.pose[:3, 3] * 1000
-                print(f"  [{stop.name}] camera at ({xyz[0]:7.1f},{xyz[1]:7.1f},{xyz[2]:7.1f}) mm")
-                view.show(stop.frame.rgb, [f"stop: {stop.name}"] + pose_lines(stop.pose))
-                if out_dir is not None:
-                    _write_stop(out_dir, stop)
-            print(f"Captured {stops} of {len(names)} stop(s)"
-                  + (f" to {out_dir}" if out_dir else "")
-                  + ("" if stops == len(names) else " — aborted early."))
-    return 0
-
-
-def _write_stop(out_dir: Path, stop) -> None:
-    """Persist one stop: the frame, plus the measured pose and joints beside it."""
-    import json
-
-    import cv2
-
-    cv2.imwrite(str(out_dir / f"{stop.name}.png"), stop.frame.rgb)
-    (out_dir / f"{stop.name}.json").write_text(
-        json.dumps(
-            {
-                "name": stop.name,
-                "joints_measured_deg": stop.joints.tolist(),
-                "camera_pose_in_base": stop.pose.tolist(),
-                "note": "pose is FK of MEASURED joints; intrinsics are uncalibrated",
-            },
-            indent=2,
-        )
-    )
-
-
 def cmd_record(args) -> int:
     """Record a hand-guided macro: name it, bind it to a digit, count down, then the arm
     goes limp and samples its measured joints every tick until space stops the take."""
@@ -460,19 +275,6 @@ def cmd_run(args) -> int:
                             done = play_macro(arm, macro, abort=lambda: keys.get() == " ")
                             print("Macro done." if done else "Macro aborted — holding here.")
                     return xb.poll()
-                if args.view:
-                    from dume.arducam import ArduCamSource
-                    from dume.liveview import LiveView
-
-                    camera = stack.enter_context(ArduCamSource())
-                    view = stack.enter_context(LiveView("dume camera"))
-                    print(f"Camera on device {camera.device} (intrinsics UNCALIBRATED)")
-                    status = on_tick
-
-                    def on_tick(tel):  # noqa: F811 — compose, don't replace the status line
-                        status(tel)
-                        view.show(camera.capture().rgb, [])
-
                 arm.run_teleop(poll, on_tick=on_tick)
         finally:
             xb.disconnect()
@@ -485,21 +287,19 @@ def cmd_sim(args) -> int:
 
     One faithful path — the control stack drives a *physics-backed* arm (``PyBulletArm``: motors +
     real contacts), so the sim shows how the code behaves IRL. ``--scene`` spawns a graspable box
-    (jaws close, friction holds it, opening drops it — fully emergent, no magnet); with ``--camera``
-    the end-effector camera's live detections print each tick.
+    (jaws close, friction holds it, opening drops it — fully emergent, no magnet).
     """
     import pybullet as pb
 
-    from dume.camera import CameraIntrinsics, camera_pose_from_fk
     from dume.input_xbox import XboxController
     from dume.poses import HOME_JOINTS
     from dume.service import DumeArm
     from dume.sim_world import (
-        OrbitCameraNav, PyBulletArm, SceneObject, SimCamera, SimRenderer, SimScene,
+        OrbitCameraNav, PyBulletArm, SceneObject, SimRenderer, SimScene,
     )
 
     cfg = ControllerConfig()
-    has_scene = args.scene or args.camera
+    has_scene = args.scene
     # Physics always on (gravity + ground); a scene just adds a box. The control stack drives the
     # PyBulletArm directly, so the GUI shows the physical arm — no separate commanded-joint mirror.
     renderer = SimRenderer(urdf_path=cfg.urdf_path, gui=True, dynamic=True)
@@ -523,7 +323,6 @@ def cmd_sim(args) -> int:
     nav = OrbitCameraNav(renderer)  # OnShape-style: left-drag orbit, Ctrl+left-drag pan, wheel zoom
     CTRL_KEY = getattr(pb, "B3G_CONTROL", None)
 
-    cam = None
     box_id = None
     if has_scene:
         scene = SimScene()
@@ -532,24 +331,6 @@ def cmd_sim(args) -> int:
                               position=[0.28, 0.0, 0.05], rgba=[0.1, 0.6, 1.0, 1.0], mass=0.05))
         renderer.load_scene(scene)
         box_id = renderer.scene_bodies["target"]
-        if args.camera:
-            # Barebones vision: small frame, GPU renderer, throttled — see CAM_EVERY below.
-            intr = CameraIntrinsics.from_fov(160, 120, fov_y_deg=60.0)
-            cam = SimCamera(renderer, intr, lambda: camera_pose_from_fk(arm.kin, arm.get_joints()),
-                            hardware=True)
-
-    # Optional live camera feed window (separate from the 3D view).
-    cv2 = None
-    if cam is not None:
-        try:
-            import cv2 as _cv2
-            cv2 = _cv2
-            cv2.namedWindow("dume EE camera", cv2.WINDOW_NORMAL)
-        except Exception:
-            cv2 = None
-
-    state = {"i": 0}
-    CAM_EVERY = 5  # render the camera every 5th control tick (~10 Hz vs the 50 Hz loop)
 
     def on_tick(tel):
         # The physics arm moves itself — motors are stepped inside PyBulletArm.write_joints, so
@@ -561,16 +342,10 @@ def cmd_sim(args) -> int:
             keys = pb.getKeyboardEvents(physicsClientId=renderer.client)
         ctrl = CTRL_KEY is not None and bool(keys.get(CTRL_KEY, 0) & pb.KEY_IS_DOWN)
         nav.update(ctrl)
-        state["i"] += 1
         if box_id is not None:  # grip readout: real contact points + normal force, and box height
             n, f = renderer.contact_points(renderer.arm_body, box_id)
             bz = pb.getBasePositionAndOrientation(box_id, physicsClientId=renderer.client)[0][2]
             print(f"grip: contacts={n} force={f:5.1f}N  box_z={bz:+.3f}m   ", end="\r", flush=True)
-        if cam is not None and state["i"] % CAM_EVERY == 0:  # throttled — vision is the slow part
-            frame = cam.capture()  # re-render from the CURRENT EE pose
-            if cv2 is not None:
-                cv2.imshow("dume EE camera", frame.rgb[:, :, ::-1])  # RGB->BGR
-                cv2.waitKey(1)
 
     from dume.input_keyboard import KeyboardController
 
@@ -606,8 +381,6 @@ def cmd_sim(args) -> int:
         pass
     finally:
         source.disconnect()
-        if cv2 is not None:
-            cv2.destroyAllWindows()
         renderer.disconnect()
         arm.disconnect()
         print("\nStopped.")
@@ -723,42 +496,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--start-pose", default="start", help="saved joint pose to start at (default: start)")
     pr.add_argument("--start-file", help="JSON store path (default: ~/.dume/joint_poses.json)")
     pr.add_argument("--no-start-pose", action="store_true", help="don't move to a start pose on launch")
-    pr.add_argument("--view", action="store_true", help="show the end-effector camera feed")
     pr.add_argument("--macro-file", help="macro store path (default: ~/.dume/macros.json)")
 
     prc = sub.add_parser("record", help="record a hand-guided macro onto a digit key (0-9)")
     prc.add_argument("--file", help="macro store path (default: ~/.dume/macros.json)")
-
-    pv = sub.add_parser("view", help="live end-effector camera view (no arm) — for focusing")
-    pv.add_argument("--device", type=int, help="explicit camera index (default: probe for 1280x800)")
-    pv.add_argument("--no-metrics", action="store_true", help="hide the focus readout")
-
-    psc = sub.add_parser("scan", help="walk saved setpoints, streaming the end-effector camera")
-    psc.add_argument("--poses", nargs="+", help="setpoint names to visit (default: all saved)")
-    psc.add_argument("--file", help="JSON store path (default: ~/.dume/joint_poses.json)")
-    psc.add_argument("--dwell", type=float, default=0.6,
-                     help="seconds held at each stop before measuring (default: 0.6)")
-    psc.add_argument("--samples", type=int, default=5,
-                     help="measured joint reads averaged at each stop (default: 5)")
-    psc.add_argument("--slew", type=float, default=3.0,
-                     help="deg/tick joint cap; lower than teleop's 6.0 since nobody's hand is "
-                          "on the arm (default: 3.0)")
-    psc.add_argument("--save", help="directory to write each stop's frame + measured pose")
-    psc.add_argument("--dry-run", action="store_true", help="no motor motion (simulation)")
-
-    pcl = sub.add_parser("cloud", help="sweep the arm and triangulate a live point cloud")
-    pcl.add_argument("--stops", type=int, default=7, help="viewpoints in the sweep (default: 7)")
-    pcl.add_argument("--pan", type=float, default=24.0,
-                     help="total shoulder_pan sweep in degrees (default: 24)")
-    pcl.add_argument("--dwell", type=float, default=0.5, help="seconds held at each stop")
-    pcl.add_argument("--samples", type=int, default=5, help="measured joint reads averaged per stop")
-    pcl.add_argument("--slew", type=float, default=3.0, help="deg/tick joint cap (default: 3.0)")
-    pcl.add_argument("--min-baseline", type=float, default=0.02,
-                     help="metres of camera motion required between keyframes (default: 0.02)")
-    pcl.add_argument("--max-range", type=float, default=2.0, help="reject points beyond this (m)")
-    pcl.add_argument("--out", default="~/scans/cloud.npy", help="where to save the base-frame points")
-    pcl.add_argument("--no-3d", action="store_true", help="skip the PyBullet 3D view")
-    pcl.add_argument("--dry-run", action="store_true", help="no motor motion (simulation)")
 
     pg = sub.add_parser("goto", help="move to an absolute pose")
     pg.add_argument("pose", nargs=6, type=float, metavar=("X", "Y", "Z", "ROLL", "PITCH", "YAW"))
@@ -779,8 +520,6 @@ def build_parser() -> argparse.ArgumentParser:
     psim.add_argument("--noise", type=float, default=0.0,
                       help="inject N deg servo-feedback noise to feel the smoothing (default 0)")
     psim.add_argument("--scene", action="store_true", help="spawn a demo target object")
-    psim.add_argument("--camera", action="store_true",
-                      help="attach the end-effector camera and print live detections (implies --scene)")
     psim.add_argument("--keyboard", action="store_true",
                       help="drive with the keyboard instead of an Xbox pad (also the no-pad fallback)")
     return p
@@ -795,9 +534,6 @@ def main(argv=None) -> int:
         "save-pose": cmd_save_pose,
         "run": cmd_run,
         "record": cmd_record,
-        "view": cmd_view,
-        "scan": cmd_scan,
-        "cloud": cmd_cloud,
         "goto": cmd_goto,
         "sim": cmd_sim,
         "feel": cmd_feel,

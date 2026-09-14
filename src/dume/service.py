@@ -122,8 +122,8 @@ class DumeArm:
         Straight-line in joint space (no IK), so it reproduces a captured pose exactly. The
         sixth element drives the gripper. Used to send the arm to its saved start pose.
 
-        ``on_tick`` is called once per control tick while moving — used by ``dume scan`` to
-        stream the camera and to abort. Returning ``False`` from it stops the move where it is,
+        ``on_tick`` is called once per control tick while moving — the hook scripted motion uses
+        to abort. Returning ``False`` from it stops the move where it is,
         which is the abort path for scripted motion: the arm holds its current commanded
         position rather than continuing to a target the user has decided against.
         """

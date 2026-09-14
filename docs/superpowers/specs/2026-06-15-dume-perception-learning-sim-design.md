@@ -1,3 +1,6 @@
+> SUPERSEDED 2026-09-14: the end-effector camera was removed (hardware and code). Perception is
+> moving to a fixed desk camera that localises the robot in the camera frame. Kept for history.
+
 # dum-e Perception + Learning Scaffolding + Interactive Sim — Design
 
 **Date:** 2026-06-15

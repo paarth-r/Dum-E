@@ -1,3 +1,6 @@
+> SUPERSEDED 2026-09-14: the end-effector camera was removed (hardware and code). Perception is
+> moving to a fixed desk camera that localises the robot in the camera frame. Kept for history.
+
 # Live end-effector camera and flown-extrinsics point cloud
 
 Status: approved design, not yet implemented

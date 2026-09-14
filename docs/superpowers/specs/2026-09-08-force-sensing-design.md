@@ -1,7 +1,9 @@
 # Force sensing on dumE
 
 Date: 2026-09-08
-Status: design approved. SP1 implemented 2026-09-14 (`dume feel`, `forces.py`, `read_loads`;
+Status: design approved. Note 2026-09-14: the end-effector camera was removed from the arm
+and the URDF, so the `g_payload` term in Calibration is no longer needed — the CAD masses are
+the whole model. SP1 implemented 2026-09-14 (`dume feel`, `forces.py`, `read_loads`;
 hardware bus-timing measurement and the calibration sweep still to run). SP2 next.
 
 ## Goal
