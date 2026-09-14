@@ -442,6 +442,19 @@ class PyBulletArm:
             out.append(math.degrees(ang))
         return np.array(out, dtype=float)
 
+    def read_loads(self) -> np.ndarray:
+        """Motor torque PyBullet's position controller applied last step, in N*m (``getJointState``
+        [3]). Same shape/sign contract as the servo's ``Present_Load`` but already in SI, so a
+        ``ForceEstimator`` over this arm uses ``scale=1``."""
+        out = []
+        for m in MOTOR_ORDER:
+            idx = self._idx.get(m)
+            if idx is None:
+                out.append(0.0)
+                continue
+            out.append(p.getJointState(self._r.arm_body, idx, physicsClientId=self._client)[3])
+        return np.array(out, dtype=float)
+
     def write_joints(self, joints) -> None:
         q = np.asarray(joints, dtype=float)
         for i, m in enumerate(MOTOR_ORDER):

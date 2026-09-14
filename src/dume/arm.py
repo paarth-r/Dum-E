@@ -64,6 +64,23 @@ MOTOR_ORDER = [
 ]
 
 
+def assert_zero_drive_modes(calibration) -> None:
+    """Refuse a calibration that would silently invert a joint's reported load.
+
+    lerobot applies ``drive_mode`` inversion inside ``_normalize``, which never runs for
+    ``Present_Load`` (the register is raw). Every motor is ``drive_mode: 0`` today, so servo load
+    sign matches the URDF joint direction; a future recalibration that sets 1 on any motor would
+    flip that joint's force sign with no error anywhere. Fail loudly at connect instead.
+    """
+    inverted = [m for m, c in calibration.items() if int(getattr(c, "drive_mode", 0)) != 0]
+    if inverted:
+        raise RuntimeError(
+            f"Motors {inverted} have drive_mode != 0; force sensing assumes drive_mode 0 on every "
+            "motor (Present_Load is read raw and would be sign-inverted). Recalibrate with "
+            "`dume calibrate` without inverting, or teach dume.arm.read_loads about drive_mode."
+        )
+
+
 @runtime_checkable
 class ArmIO(Protocol):
     name: str
@@ -72,6 +89,7 @@ class ArmIO(Protocol):
     def disconnect(self) -> None: ...
     def is_calibrated(self) -> bool: ...
     def read_joints(self) -> np.ndarray: ...
+    def read_loads(self) -> np.ndarray: ...
     def write_joints(self, joints) -> None: ...
     def relax(self) -> None: ...
     def engage(self) -> None: ...
@@ -114,6 +132,7 @@ class SO101Arm:
         # calibrate=False: never silently launch the interactive calibration routine;
         # we check is_calibrated() explicitly and tell the user to run `dume calibrate`.
         self._robot.connect(calibrate=False)
+        assert_zero_drive_modes(self._robot.calibration)
         # Bump the gripper's position-loop P after lerobot's configure() (which sets all motors to
         # 16) so the gripper tracks the trigger snappily. Gripper only; arm joints stay gentle.
         if self._gripper_servo_p is not None:
@@ -147,6 +166,22 @@ class SO101Arm:
         obs = self._robot.get_observation()
         return np.array([obs[f"{m}.pos"] for m in MOTOR_ORDER], dtype=float)
 
+    def read_loads(self) -> np.ndarray:
+        """Per-motor ``Present_Load`` in raw signed servo units (~+-1000 full scale), MOTOR_ORDER.
+
+        This is the PWM duty the servo's position loop is applying; at zero velocity it is
+        proportional to torque. Read raw (``normalize=False``): the register is absent from
+        lerobot's ``normalized_data`` and its 10-bit sign-magnitude encoding is already decoded
+        by the bus. Meaningless while torque is off (reads 0).
+        """
+        vals = self._robot.bus.sync_read("Present_Load", MOTOR_ORDER, normalize=False)
+        return np.array([vals[m] for m in MOTOR_ORDER], dtype=float)
+
+    def read_voltage(self) -> float:
+        """Supply rail in volts (``Present_Voltage`` is in 0.1 V units), read from motor 1."""
+        vals = self._robot.bus.sync_read("Present_Voltage", MOTOR_ORDER[:1], normalize=False)
+        return float(vals[MOTOR_ORDER[0]]) / 10.0
+
     def write_joints(self, joints) -> None:
         joints = np.asarray(joints, dtype=float)
         action = {f"{m}.pos": float(joints[i]) for i, m in enumerate(MOTOR_ORDER)}
@@ -177,11 +212,21 @@ class SimArm:
     joints (not the gripper), modelling the quantised/noisy feedback real Feetech servos report.
     Used to reproduce hardware teleop jitter offline and verify the controller's internal
     commanded-reference (``q_ref``) ignores it. Default 0.0 keeps the sim exact.
+
+    ``load_source`` (joints -> length-6 array) synthesises ``read_loads`` so the force estimator
+    and grasp logic run under ``--dry-run``; default is all zeros (no load, like torque off).
     """
 
     name = "sim"
 
-    def __init__(self, initial_joints=None, *, servo_noise_deg: float = 0.0, seed: int = 0):
+    def __init__(
+        self,
+        initial_joints=None,
+        *,
+        servo_noise_deg: float = 0.0,
+        seed: int = 0,
+        load_source: Callable[[np.ndarray], np.ndarray] | None = None,
+    ):
         self._joints = (
             np.array([0.0, -20.0, 20.0, 0.0, 0.0, 50.0], dtype=float)
             if initial_joints is None
@@ -190,6 +235,7 @@ class SimArm:
         self._connected = False
         self.servo_noise_deg = float(servo_noise_deg)
         self._rng = np.random.default_rng(seed)
+        self._load_source = load_source
 
     def connect(self) -> None:
         self._connected = True
@@ -205,6 +251,11 @@ class SimArm:
         if self.servo_noise_deg > 0.0:
             q[:5] += self._rng.normal(0.0, self.servo_noise_deg, size=5)
         return q
+
+    def read_loads(self) -> np.ndarray:
+        if self._load_source is None:
+            return np.zeros(6)
+        return np.asarray(self._load_source(self._joints.copy()), dtype=float)
 
     def write_joints(self, joints) -> None:
         self._joints = np.asarray(joints, dtype=float).copy()
